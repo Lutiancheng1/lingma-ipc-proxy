@@ -36,6 +36,14 @@ func main() {
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 
 	svc := service.New(cfg)
+	warmupCtx, warmupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := svc.Warmup(warmupCtx); err != nil {
+		log.Printf("warmup failed: %v", err)
+	} else {
+		log.Printf("Lingma IPC warmup completed")
+	}
+	warmupCancel()
+
 	server := httpapi.NewServer(addr, svc)
 
 	log.Printf("lingma-ipc-proxy listening on http://%s", addr)
