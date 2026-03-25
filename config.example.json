@@ -1,0 +1,11 @@
+{
+  "host": "127.0.0.1",
+  "port": 8095,
+  "mode": "chat",
+  "session_mode": "reuse",
+  "timeout": 120,
+  "cwd": "C:/Workspace/Personal/lingma-ipc-proxy",
+  "shell_type": "powershell",
+  "current_file_path": "",
+  "pipe": ""
+}

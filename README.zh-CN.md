@@ -22,6 +22,51 @@ cd C:\Workspace\Personal\lingma-ipc-proxy
 go run .\cmd\lingma-ipc-proxy
 ```
 
+## 配置文件
+
+代理现在支持 JSON 配置文件，这样就不用每次都带一长串启动参数。
+
+默认会尝试读取：
+
+```text
+./lingma-ipc-proxy.json
+```
+
+也可以显式指定：
+
+```powershell
+.\dist\lingma-ipc-proxy.exe --config .\config.example.json
+```
+
+参数解析优先级：
+
+- 内置默认值
+- JSON 配置文件
+- 环境变量
+- 命令行参数
+
+仓库里附带了一份示例配置：
+
+- `config.example.json`
+
+比较实用的方式是先复制成 `lingma-ipc-proxy.json`，改好一次，后面直接启动代理，不再重复拼长参数。
+
+推荐结构：
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 8095,
+  "mode": "chat",
+  "session_mode": "reuse",
+  "timeout": 120,
+  "cwd": "C:/Workspace/Personal/lingma-ipc-proxy",
+  "shell_type": "powershell",
+  "current_file_path": "",
+  "pipe": ""
+}
+```
+
 ## 构建
 
 构建 Windows 可执行文件：

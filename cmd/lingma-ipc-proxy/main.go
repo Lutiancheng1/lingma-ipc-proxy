@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -17,8 +19,20 @@ import (
 	"lingma-ipc-proxy/internal/service"
 )
 
+type fileConfig struct {
+	Host            string `json:"host"`
+	Port            int    `json:"port"`
+	Pipe            string `json:"pipe"`
+	Cwd             string `json:"cwd"`
+	CurrentFilePath string `json:"current_file_path"`
+	Mode            string `json:"mode"`
+	ShellType       string `json:"shell_type"`
+	SessionMode     string `json:"session_mode"`
+	TimeoutSeconds  int    `json:"timeout"`
+}
+
 func main() {
-	cfg := loadConfig()
+	cfg, configPath := loadConfig()
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 
 	svc := service.New(cfg)
@@ -26,6 +40,10 @@ func main() {
 
 	log.Printf("lingma-ipc-proxy listening on http://%s", addr)
 	log.Printf("session mode: %s", cfg.SessionMode)
+	log.Printf("mode: %s", cfg.Mode)
+	if configPath != "" {
+		log.Printf("config file: %s", configPath)
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -51,53 +69,174 @@ func main() {
 	}
 }
 
-func loadConfig() service.Config {
-	hostDefault := envString("LINGMA_PROXY_HOST", "127.0.0.1")
-	portDefault := envInt("LINGMA_PROXY_PORT", 8095)
-	pipeDefault := envString("LINGMA_IPC_PIPE", "")
-	cwdDefault := envString("LINGMA_PROXY_CWD", currentDir())
-	currentFilePathDefault := envString("LINGMA_PROXY_CURRENT_FILE_PATH", "")
-	modeDefault := envString("LINGMA_PROXY_MODE", "agent")
-	shellTypeDefault := envString("LINGMA_PROXY_SHELL_TYPE", "powershell")
-	timeoutDefault := envInt("LINGMA_PROXY_TIMEOUT_SECONDS", 120)
-	sessionModeDefault := envString("LINGMA_PROXY_SESSION_MODE", string(service.SessionModeAuto))
-
-	host := flag.String("host", hostDefault, "Listen host")
-	port := flag.Int("port", portDefault, "Listen port")
-	pipe := flag.String("pipe", pipeDefault, "Explicit Lingma named pipe path")
-	cwd := flag.String("cwd", cwdDefault, "Working directory used when creating Lingma sessions")
-	currentFilePath := flag.String("current-file-path", currentFilePathDefault, "Current file path sent through ACP meta")
-	mode := flag.String("mode", modeDefault, "Lingma ACP mode value")
-	shellType := flag.String("shell-type", shellTypeDefault, "Shell type sent through ACP meta")
-	timeoutSeconds := flag.Int("timeout", timeoutDefault, "Per-request timeout in seconds")
-	sessionMode := flag.String("session-mode", sessionModeDefault, "Session mode: auto, fresh, reuse")
-	flag.Parse()
-
-	parsedSessionMode := service.SessionMode(strings.ToLower(strings.TrimSpace(*sessionMode)))
-	switch parsedSessionMode {
-	case service.SessionModeAuto, service.SessionModeFresh, service.SessionModeReuse:
-	default:
-		log.Fatalf("invalid --session-mode %q; expected auto, fresh, or reuse", *sessionMode)
+func loadConfig() (service.Config, string) {
+	cfg := service.Config{
+		Host:        "127.0.0.1",
+		Port:        8095,
+		Cwd:         currentDir(),
+		Mode:        "agent",
+		ShellType:   "powershell",
+		SessionMode: service.SessionModeAuto,
+		Timeout:     120 * time.Second,
 	}
 
-	return service.Config{
-		Host:            strings.TrimSpace(*host),
-		Port:            *port,
-		Pipe:            strings.TrimSpace(*pipe),
-		Cwd:             strings.TrimSpace(*cwd),
-		CurrentFilePath: strings.TrimSpace(*currentFilePath),
-		Mode:            strings.TrimSpace(*mode),
-		ShellType:       strings.TrimSpace(*shellType),
-		SessionMode:     parsedSessionMode,
-		Timeout:         time.Duration(*timeoutSeconds) * time.Second,
+	configPath, configLoaded := resolveConfigPath()
+	if configLoaded {
+		fileCfg, err := readFileConfig(configPath)
+		if err != nil {
+			log.Fatalf("load config file %q: %v", configPath, err)
+		}
+		overlayFileConfig(&cfg, fileCfg)
+	}
+
+	overlayEnvConfig(&cfg)
+
+	host := flag.String("host", cfg.Host, "Listen host")
+	port := flag.Int("port", cfg.Port, "Listen port")
+	pipe := flag.String("pipe", cfg.Pipe, "Explicit Lingma named pipe path")
+	cwd := flag.String("cwd", cfg.Cwd, "Working directory used when creating Lingma sessions")
+	currentFilePath := flag.String("current-file-path", cfg.CurrentFilePath, "Current file path sent through ACP meta")
+	mode := flag.String("mode", cfg.Mode, "Lingma ACP mode value")
+	shellType := flag.String("shell-type", cfg.ShellType, "Shell type sent through ACP meta")
+	timeoutSeconds := flag.Int("timeout", int(cfg.Timeout/time.Second), "Per-request timeout in seconds")
+	sessionMode := flag.String("session-mode", string(cfg.SessionMode), "Session mode: auto, fresh, reuse")
+	config := flag.String("config", valueOr(configPath, filepath.Join(currentDir(), "lingma-ipc-proxy.json")), "Path to JSON config file")
+	flag.Parse()
+
+	parsedSessionMode := parseSessionMode(*sessionMode)
+	finalConfigPath := strings.TrimSpace(*config)
+
+	cfg.Host = strings.TrimSpace(*host)
+	cfg.Port = *port
+	cfg.Pipe = strings.TrimSpace(*pipe)
+	cfg.Cwd = strings.TrimSpace(*cwd)
+	cfg.CurrentFilePath = strings.TrimSpace(*currentFilePath)
+	cfg.Mode = strings.TrimSpace(*mode)
+	cfg.ShellType = strings.TrimSpace(*shellType)
+	cfg.SessionMode = parsedSessionMode
+	cfg.Timeout = time.Duration(*timeoutSeconds) * time.Second
+
+	if configLoaded {
+		configPath = finalConfigPath
+	} else {
+		configPath = ""
+	}
+
+	return cfg, configPath
+}
+
+func resolveConfigPath() (string, bool) {
+	if path := strings.TrimSpace(lookupArgValue("--config")); path != "" {
+		return path, true
+	}
+	if path := strings.TrimSpace(os.Getenv("LINGMA_PROXY_CONFIG")); path != "" {
+		return path, true
+	}
+	defaultPath := filepath.Join(currentDir(), "lingma-ipc-proxy.json")
+	if info, err := os.Stat(defaultPath); err == nil && !info.IsDir() {
+		return defaultPath, true
+	}
+	return defaultPath, false
+}
+
+func readFileConfig(path string) (fileConfig, error) {
+	var cfg fileConfig
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return cfg, err
+	}
+	if err := json.Unmarshal(body, &cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+func overlayFileConfig(dst *service.Config, src fileConfig) {
+	if strings.TrimSpace(src.Host) != "" {
+		dst.Host = strings.TrimSpace(src.Host)
+	}
+	if src.Port > 0 {
+		dst.Port = src.Port
+	}
+	if strings.TrimSpace(src.Pipe) != "" {
+		dst.Pipe = strings.TrimSpace(src.Pipe)
+	}
+	if strings.TrimSpace(src.Cwd) != "" {
+		dst.Cwd = strings.TrimSpace(src.Cwd)
+	}
+	if strings.TrimSpace(src.CurrentFilePath) != "" {
+		dst.CurrentFilePath = strings.TrimSpace(src.CurrentFilePath)
+	}
+	if strings.TrimSpace(src.Mode) != "" {
+		dst.Mode = strings.TrimSpace(src.Mode)
+	}
+	if strings.TrimSpace(src.ShellType) != "" {
+		dst.ShellType = strings.TrimSpace(src.ShellType)
+	}
+	if strings.TrimSpace(src.SessionMode) != "" {
+		dst.SessionMode = parseSessionMode(src.SessionMode)
+	}
+	if src.TimeoutSeconds > 0 {
+		dst.Timeout = time.Duration(src.TimeoutSeconds) * time.Second
 	}
 }
 
-func envString(key string, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-		return value
+func overlayEnvConfig(dst *service.Config) {
+	if value := strings.TrimSpace(os.Getenv("LINGMA_PROXY_HOST")); value != "" {
+		dst.Host = value
 	}
-	return fallback
+	if value := envInt("LINGMA_PROXY_PORT", 0); value > 0 {
+		dst.Port = value
+	}
+	if value := strings.TrimSpace(os.Getenv("LINGMA_IPC_PIPE")); value != "" {
+		dst.Pipe = value
+	}
+	if value := strings.TrimSpace(os.Getenv("LINGMA_PROXY_CWD")); value != "" {
+		dst.Cwd = value
+	}
+	if value := strings.TrimSpace(os.Getenv("LINGMA_PROXY_CURRENT_FILE_PATH")); value != "" {
+		dst.CurrentFilePath = value
+	}
+	if value := strings.TrimSpace(os.Getenv("LINGMA_PROXY_MODE")); value != "" {
+		dst.Mode = value
+	}
+	if value := strings.TrimSpace(os.Getenv("LINGMA_PROXY_SHELL_TYPE")); value != "" {
+		dst.ShellType = value
+	}
+	if value := strings.TrimSpace(os.Getenv("LINGMA_PROXY_SESSION_MODE")); value != "" {
+		dst.SessionMode = parseSessionMode(value)
+	}
+	if value := envInt("LINGMA_PROXY_TIMEOUT_SECONDS", 0); value > 0 {
+		dst.Timeout = time.Duration(value) * time.Second
+	}
+}
+
+func parseSessionMode(value string) service.SessionMode {
+	mode := service.SessionMode(strings.ToLower(strings.TrimSpace(value)))
+	switch mode {
+	case service.SessionModeAuto, service.SessionModeFresh, service.SessionModeReuse:
+		return mode
+	default:
+		log.Fatalf("invalid session mode %q; expected auto, fresh, or reuse", value)
+		return service.SessionModeAuto
+	}
+}
+
+func lookupArgValue(flagName string) string {
+	for i := 1; i < len(os.Args); i++ {
+		arg := os.Args[i]
+		if arg == flagName {
+			if i+1 < len(os.Args) {
+				return os.Args[i+1]
+			}
+			return ""
+		}
+		prefix := flagName + "="
+		if strings.HasPrefix(arg, prefix) {
+			return strings.TrimPrefix(arg, prefix)
+		}
+	}
+	return ""
 }
 
 func envInt(key string, fallback int) int {
@@ -115,3 +254,11 @@ func currentDir() string {
 	}
 	return "."
 }
+
+func valueOr(value string, fallback string) string {
+	if strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value)
+	}
+	return fallback
+}
+

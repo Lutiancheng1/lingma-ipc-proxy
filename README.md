@@ -22,6 +22,51 @@ cd C:\Workspace\Personal\lingma-ipc-proxy
 go run .\cmd\lingma-ipc-proxy
 ```
 
+## Config File
+
+The proxy can load a JSON config file so you do not need to carry a long command line every time.
+
+Default lookup:
+
+```text
+./lingma-ipc-proxy.json
+```
+
+You can also point to an explicit file:
+
+```powershell
+.\dist\lingma-ipc-proxy.exe --config .\config.example.json
+```
+
+Resolution order:
+
+- built-in defaults
+- JSON config file
+- environment variables
+- command-line flags
+
+An example config is included at:
+
+- `config.example.json`
+
+A practical setup is to copy it to `lingma-ipc-proxy.json`, adjust the values once, and then start the proxy without a long flag list.
+
+Recommended layout:
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 8095,
+  "mode": "chat",
+  "session_mode": "reuse",
+  "timeout": 120,
+  "cwd": "C:/Workspace/Personal/lingma-ipc-proxy",
+  "shell_type": "powershell",
+  "current_file_path": "",
+  "pipe": ""
+}
+```
+
 ## Build
 
 Build a Windows executable:
