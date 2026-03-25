@@ -20,6 +20,98 @@ cd C:\Workspace\Personal\lingma-ipc-proxy
 go run .\cmd\lingma-ipc-proxy
 ```
 
+## Build
+
+Build a Windows executable:
+
+```powershell
+cd C:\Workspace\Personal\lingma-ipc-proxy
+.\scripts\build.ps1
+```
+
+Default output:
+
+```text
+dist\lingma-ipc-proxy.exe
+```
+
+Direct Go build command:
+
+```powershell
+$env:CGO_ENABLED = "0"
+$env:GOOS = "windows"
+$env:GOARCH = "amd64"
+go build -trimpath -ldflags "-s -w" -o .\dist\lingma-ipc-proxy.exe .\cmd\lingma-ipc-proxy
+```
+
+Run the built binary:
+
+```powershell
+.\dist\lingma-ipc-proxy.exe --host 127.0.0.1 --port 8095 --session-mode auto
+```
+
+## Windows Service
+
+For this project, the correct deployment shape is a native Windows process, not Docker. The proxy talks to Lingma over Windows named pipes, so it should run on the same Windows host as Lingma itself.
+
+### NSSM
+
+Build first:
+
+```powershell
+.\scripts\build.ps1
+```
+
+Install with NSSM:
+
+```powershell
+.\scripts\install-nssm-service.ps1 -NssmPath C:\Tools\nssm\nssm.exe
+```
+
+This wraps:
+
+```powershell
+nssm.exe install LingmaIpcProxy C:\Workspace\Personal\lingma-ipc-proxy\dist\lingma-ipc-proxy.exe --host 127.0.0.1 --port 8095 --session-mode auto
+nssm.exe set LingmaIpcProxy AppDirectory C:\Workspace\Personal\lingma-ipc-proxy
+nssm.exe start LingmaIpcProxy
+```
+
+### WinSW
+
+Prepare the executable:
+
+```powershell
+.\scripts\build.ps1
+```
+
+Put a WinSW binary at:
+
+```text
+dist\WinSW-x64.exe
+```
+
+Then generate the wrapper files:
+
+```powershell
+.\scripts\install-winsw-service.ps1
+```
+
+That script creates:
+
+- `LingmaIpcProxy.exe`
+- `LingmaIpcProxy.xml`
+
+Then install/start:
+
+```powershell
+.\LingmaIpcProxy.exe install
+.\LingmaIpcProxy.exe start
+```
+
+The WinSW XML template lives at:
+
+- `scripts\lingma-ipc-proxy.xml.template`
+
 ## Flags
 
 ```powershell

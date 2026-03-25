@@ -1,0 +1,15 @@
+<service>
+  <id>__SERVICE_ID__</id>
+  <name>__SERVICE_NAME__</name>
+  <description>__SERVICE_DESCRIPTION__</description>
+  <executable>__EXECUTABLE__</executable>
+  <arguments>__ARGUMENTS__</arguments>
+  <workingdirectory>__WORKDIR__</workingdirectory>
+  <logpath>__LOGDIR__</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10485760</sizeThreshold>
+    <keepFiles>5</keepFiles>
+  </log>
+  <startmode>Automatic</startmode>
+  <stoptimeout>15sec</stoptimeout>
+</service>
