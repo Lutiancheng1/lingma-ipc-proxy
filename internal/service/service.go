@@ -192,7 +192,7 @@ func (s *Service) generateLocked(
 	ctx context.Context,
 	req ChatRequest,
 	onDelta func(string),
-) (*ChatResult, error) {
+) (result *ChatResult, err error) {
 	requestCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
 	defer cancel()
 
@@ -214,6 +214,14 @@ func (s *Service) generateLocked(
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if effectiveMode == SessionModeReuse || strings.TrimSpace(sessionID) == "" {
+			return
+		}
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		_ = s.deleteSessionLocked(cleanupCtx, ipcClient, sessionID)
+	}()
 
 	requestID := lingmaipc.CreateRequestID("serve")
 	meta := lingmaipc.CreateMeta(lingmaipc.MetaOptions{
@@ -261,7 +269,8 @@ func (s *Service) generateLocked(
 		return nil, fmt.Errorf("Lingma IPC response remained incomplete before timeout. Partial reply: %s", truncate(runResult.AssistantText, 120))
 	}
 
-	return s.buildChatResult(req, sessionID, requestID, prompt, runResult, effectiveMode), nil
+	result = s.buildChatResult(req, sessionID, requestID, prompt, runResult, effectiveMode)
+	return result, nil
 }
 
 func (s *Service) buildChatResult(
@@ -435,6 +444,23 @@ func (s *Service) runPromptLocked(
 			}
 		}
 	}
+}
+
+func (s *Service) deleteSessionLocked(ctx context.Context, client *lingmaipc.Client, sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil
+	}
+
+	if err := client.Request(ctx, "chat/deleteSessionById", map[string]any{
+		"sessionId": sessionID,
+	}, nil); err == nil {
+		return nil
+	}
+
+	return client.Request(ctx, "chat/deleteSessionById", map[string]any{
+		"id": sessionID,
+	}, nil)
 }
 
 func resolveSessionMode(req ChatRequest, configured SessionMode) SessionMode {

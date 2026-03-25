@@ -34,6 +34,9 @@ go run .\cmd\lingma-ipc-proxy --port 8095 --session-mode auto
 - `--mode`
 - `--shell-type`
 - `--session-mode`
+  - `reuse`: keep using the sticky Lingma session
+  - `fresh`: create a temporary session for the request and delete it after completion
+  - `auto`: single-turn requests reuse; requests with system/history use a temporary fresh session and delete it after completion
 - `--timeout`
 
 ## Environment
