@@ -1,0 +1,11 @@
+bin/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.*
+.idea/
+.vscode/
