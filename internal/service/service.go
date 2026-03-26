@@ -25,7 +25,9 @@ const (
 type Config struct {
 	Host            string
 	Port            int
+	Transport       lingmaipc.Transport
 	Pipe            string
+	WebSocketURL    string
 	Cwd             string
 	CurrentFilePath string
 	Mode            string
@@ -57,6 +59,8 @@ type ChatResult struct {
 	UsedTokens       int
 	LimitTokens      int
 	PipePath         string
+	Endpoint         string
+	Transport        string
 	EffectiveSession SessionMode
 }
 
@@ -77,6 +81,8 @@ type Model struct {
 
 type State struct {
 	PipePath        string      `json:"pipe_path,omitempty"`
+	Endpoint        string      `json:"endpoint,omitempty"`
+	Transport       string      `json:"transport,omitempty"`
 	Connected       bool        `json:"connected"`
 	StickySessionID string      `json:"sticky_session_id,omitempty"`
 	SessionMode     SessionMode `json:"session_mode"`
@@ -87,6 +93,8 @@ type Service struct {
 	mu              sync.Mutex
 	client          *lingmaipc.Client
 	pipePath        string
+	endpoint        string
+	transport       lingmaipc.Transport
 	stickySessionID string
 	stickyModelID   string
 }
@@ -114,6 +122,9 @@ func New(cfg Config) *Service {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 120 * time.Second
 	}
+	if cfg.Transport == "" {
+		cfg.Transport = lingmaipc.TransportAuto
+	}
 	if cfg.SessionMode == "" {
 		cfg.SessionMode = SessionModeAuto
 	}
@@ -136,6 +147,8 @@ func (s *Service) State() State {
 	defer s.mu.Unlock()
 	return State{
 		PipePath:        s.pipePath,
+		Endpoint:        s.endpoint,
+		Transport:       string(s.transport),
 		Connected:       s.client != nil,
 		StickySessionID: s.stickySessionID,
 		SessionMode:     s.cfg.SessionMode,
@@ -282,6 +295,7 @@ func (s *Service) buildChatResult(
 	runResult *promptRunResult,
 	effectiveMode SessionMode,
 ) *ChatResult {
+	endpoint := s.currentPipePath()
 	return &ChatResult{
 		Text:             runResult.AssistantText,
 		Model:            valueOr(strings.TrimSpace(req.Model), "lingma"),
@@ -293,7 +307,9 @@ func (s *Service) buildChatResult(
 		StopReason:       nestedString(runResult.PromptResult, "stopReason"),
 		UsedTokens:       int(nestedInt64(runResult.ContextUsage, "usedTokens")),
 		LimitTokens:      int(nestedInt64(runResult.ContextUsage, "limitTokens")),
-		PipePath:         s.currentPipePath(),
+		PipePath:         endpoint,
+		Endpoint:         endpoint,
+		Transport:        string(s.currentTransport()),
 		EffectiveSession: effectiveMode,
 	}
 }
@@ -309,11 +325,11 @@ func (s *Service) ensureConnectedLocked(ctx context.Context) (*lingmaipc.Client,
 		return s.client, nil
 	}
 
-	pipePath, err := lingmaipc.ResolvePipePath(s.cfg.Pipe)
+	dialOptions, err := lingmaipc.ResolveDialOptions(s.cfg.Transport, s.cfg.Pipe, s.cfg.WebSocketURL)
 	if err != nil {
 		return nil, err
 	}
-	client, err := lingmaipc.Connect(ctx, pipePath)
+	client, err := lingmaipc.Connect(ctx, dialOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -327,19 +343,25 @@ func (s *Service) ensureConnectedLocked(ctx context.Context) (*lingmaipc.Client,
 	}
 
 	s.client = client
-	s.pipePath = pipePath
+	s.pipePath = dialOptions.PipePath
+	s.endpoint = client.Address()
+	s.transport = client.Transport()
 	return client, nil
 }
 
 func (s *Service) closeClientLocked() error {
 	if s.client == nil {
 		s.pipePath = ""
+		s.endpoint = ""
+		s.transport = ""
 		s.clearStickyLocked()
 		return nil
 	}
 	client := s.client
 	s.client = nil
 	s.pipePath = ""
+	s.endpoint = ""
+	s.transport = ""
 	s.clearStickyLocked()
 	return client.Close()
 }
@@ -388,7 +410,16 @@ func (s *Service) clearStickyLocked() {
 func (s *Service) currentPipePath() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if strings.TrimSpace(s.endpoint) != "" {
+		return s.endpoint
+	}
 	return s.pipePath
+}
+
+func (s *Service) currentTransport() lingmaipc.Transport {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.transport
 }
 
 func (s *Service) resolveSessionLocked(ctx context.Context, client *lingmaipc.Client, mode SessionMode) (string, error) {
@@ -436,18 +467,17 @@ func (s *Service) runPromptLocked(
 	notifications, cancel := client.Subscribe()
 	defer cancel()
 
-	promptResult := map[string]any{}
-	if err := client.Request(ctx, "session/prompt", map[string]any{
+	if err := client.Send("session/prompt", map[string]any{
 		"sessionId": sessionID,
 		"prompt": []map[string]any{
 			{"type": "text", "text": text},
 		},
 		"_meta": meta,
-	}, &promptResult); err != nil {
+	}); err != nil {
 		return nil, err
 	}
 
-	result := &promptRunResult{PromptResult: promptResult}
+	result := &promptRunResult{PromptResult: map[string]any{}}
 	var builder strings.Builder
 
 	for {

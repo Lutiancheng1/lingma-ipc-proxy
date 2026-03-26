@@ -2,7 +2,7 @@
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
-A standalone Go backend that talks to Lingma over Windows named-pipe IPC and exposes:
+A standalone Go backend that talks to Lingma over Lingma's local pipe or websocket transport and exposes:
 
 - `GET /v1/models`
 - `POST /v1/messages`
@@ -12,7 +12,7 @@ Current scope:
 
 - supports both non-streaming and streaming responses
 - one request at a time
-- Windows only
+- supports Windows named-pipe transport and local websocket transport
 - directly uses Lingma IPC, not DOM/CDP
 
 ## Run
@@ -57,13 +57,15 @@ Recommended layout:
 {
   "host": "127.0.0.1",
   "port": 8095,
+  "transport": "auto",
   "mode": "chat",
   "session_mode": "reuse",
   "timeout": 120,
   "cwd": "C:/Workspace/Personal/lingma-ipc-proxy",
   "shell_type": "powershell",
   "current_file_path": "",
-  "pipe": ""
+  "pipe": "",
+  "websocket_url": ""
 }
 ```
 
@@ -95,11 +97,12 @@ Run the built binary:
 
 ```powershell
 .\dist\lingma-ipc-proxy.exe --host 127.0.0.1 --port 8095 --session-mode auto
+.\dist\lingma-ipc-proxy.exe --transport websocket --ws-url ws://127.0.0.1:36510 --port 8095
 ```
 
 ## Windows Service
 
-For this project, the correct deployment shape is a native Windows process, not Docker. The proxy talks to Lingma over Windows named pipes, so it should run on the same Windows host as Lingma itself.
+For this project, the correct deployment shape is a native local process, not Docker. The proxy talks to Lingma over local pipe or websocket transport, so it should run on the same host as Lingma itself.
 
 ### NSSM
 
@@ -167,7 +170,9 @@ go run .\cmd\lingma-ipc-proxy --port 8095 --session-mode auto
 
 - `--host`
 - `--port`
+- `--transport`
 - `--pipe`
+- `--ws-url`
 - `--cwd`
 - `--current-file-path`
 - `--mode`
@@ -180,7 +185,9 @@ go run .\cmd\lingma-ipc-proxy --port 8095 --session-mode auto
 
 ## Environment
 
+- `LINGMA_PROXY_TRANSPORT`
 - `LINGMA_IPC_PIPE`
+- `LINGMA_PROXY_WS_URL`
 - `LINGMA_PROXY_HOST`
 - `LINGMA_PROXY_PORT`
 - `LINGMA_PROXY_CWD`

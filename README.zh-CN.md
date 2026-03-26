@@ -2,7 +2,7 @@
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
-`lingma-ipc-proxy` 是一个独立的 Go 后端，通过 Windows Named Pipe IPC 与 Lingma 通信，并对外暴露：
+`lingma-ipc-proxy` 是一个独立的 Go 后端，通过 Lingma 本地 pipe 或 websocket 传输与其通信，并对外暴露：
 
 - `GET /v1/models`
 - `POST /v1/messages`
@@ -12,7 +12,7 @@
 
 - 支持非流式与流式响应
 - 单次只处理一个请求
-- 仅支持 Windows
+- 支持 Windows named pipe 传输，也支持本地 websocket 传输
 - 直接走 Lingma IPC，不依赖 DOM/CDP
 
 ## 运行
@@ -57,13 +57,15 @@ go run .\cmd\lingma-ipc-proxy
 {
   "host": "127.0.0.1",
   "port": 8095,
+  "transport": "auto",
   "mode": "chat",
   "session_mode": "reuse",
   "timeout": 120,
   "cwd": "C:/Workspace/Personal/lingma-ipc-proxy",
   "shell_type": "powershell",
   "current_file_path": "",
-  "pipe": ""
+  "pipe": "",
+  "websocket_url": ""
 }
 ```
 
@@ -95,11 +97,12 @@ go build -trimpath -ldflags "-s -w" -o .\dist\lingma-ipc-proxy.exe .\cmd\lingma-
 
 ```powershell
 .\dist\lingma-ipc-proxy.exe --host 127.0.0.1 --port 8095 --session-mode auto
+.\dist\lingma-ipc-proxy.exe --transport websocket --ws-url ws://127.0.0.1:36510 --port 8095
 ```
 
 ## Windows 服务
 
-这个项目正确的部署形态是 Windows 本机进程，不是 Docker。原因很直接：代理需要通过 Windows named pipe 与本机 Lingma 通信，所以必须和 Lingma 跑在同一台 Windows 主机上。
+这个项目正确的部署形态是本机进程，不是 Docker。原因很直接：代理需要通过本地 pipe 或 websocket 与 Lingma 通信，所以必须和 Lingma 跑在同一台主机上。
 
 ### NSSM
 
@@ -167,7 +170,9 @@ go run .\cmd\lingma-ipc-proxy --port 8095 --session-mode auto
 
 - `--host`
 - `--port`
+- `--transport`
 - `--pipe`
+- `--ws-url`
 - `--cwd`
 - `--current-file-path`
 - `--mode`
@@ -180,7 +185,9 @@ go run .\cmd\lingma-ipc-proxy --port 8095 --session-mode auto
 
 ## 环境变量
 
+- `LINGMA_PROXY_TRANSPORT`
 - `LINGMA_IPC_PIPE`
+- `LINGMA_PROXY_WS_URL`
 - `LINGMA_PROXY_HOST`
 - `LINGMA_PROXY_PORT`
 - `LINGMA_PROXY_CWD`

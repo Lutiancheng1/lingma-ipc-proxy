@@ -16,13 +16,16 @@ import (
 	"time"
 
 	"lingma-ipc-proxy/internal/httpapi"
+	"lingma-ipc-proxy/internal/lingmaipc"
 	"lingma-ipc-proxy/internal/service"
 )
 
 type fileConfig struct {
 	Host            string `json:"host"`
 	Port            int    `json:"port"`
+	Transport       string `json:"transport"`
 	Pipe            string `json:"pipe"`
+	WebSocketURL    string `json:"websocket_url"`
 	Cwd             string `json:"cwd"`
 	CurrentFilePath string `json:"current_file_path"`
 	Mode            string `json:"mode"`
@@ -48,6 +51,7 @@ func main() {
 
 	log.Printf("lingma-ipc-proxy listening on http://%s", addr)
 	log.Printf("session mode: %s", cfg.SessionMode)
+	log.Printf("transport: %s", cfg.Transport)
 	log.Printf("mode: %s", cfg.Mode)
 	if configPath != "" {
 		log.Printf("config file: %s", configPath)
@@ -81,6 +85,7 @@ func loadConfig() (service.Config, string) {
 	cfg := service.Config{
 		Host:        "127.0.0.1",
 		Port:        8095,
+		Transport:   lingmaipc.TransportAuto,
 		Cwd:         currentDir(),
 		Mode:        "agent",
 		ShellType:   "powershell",
@@ -101,7 +106,9 @@ func loadConfig() (service.Config, string) {
 
 	host := flag.String("host", cfg.Host, "Listen host")
 	port := flag.Int("port", cfg.Port, "Listen port")
+	transport := flag.String("transport", string(cfg.Transport), "Lingma transport: auto, pipe, websocket")
 	pipe := flag.String("pipe", cfg.Pipe, "Explicit Lingma named pipe path")
+	wsURL := flag.String("ws-url", cfg.WebSocketURL, "Explicit Lingma local websocket URL")
 	cwd := flag.String("cwd", cfg.Cwd, "Working directory used when creating Lingma sessions")
 	currentFilePath := flag.String("current-file-path", cfg.CurrentFilePath, "Current file path sent through ACP meta")
 	mode := flag.String("mode", cfg.Mode, "Lingma ACP mode value")
@@ -112,11 +119,14 @@ func loadConfig() (service.Config, string) {
 	flag.Parse()
 
 	parsedSessionMode := parseSessionMode(*sessionMode)
+	parsedTransport := parseTransport(*transport)
 	finalConfigPath := strings.TrimSpace(*config)
 
 	cfg.Host = strings.TrimSpace(*host)
 	cfg.Port = *port
+	cfg.Transport = parsedTransport
 	cfg.Pipe = strings.TrimSpace(*pipe)
+	cfg.WebSocketURL = strings.TrimSpace(*wsURL)
 	cfg.Cwd = strings.TrimSpace(*cwd)
 	cfg.CurrentFilePath = strings.TrimSpace(*currentFilePath)
 	cfg.Mode = strings.TrimSpace(*mode)
@@ -166,8 +176,14 @@ func overlayFileConfig(dst *service.Config, src fileConfig) {
 	if src.Port > 0 {
 		dst.Port = src.Port
 	}
+	if strings.TrimSpace(src.Transport) != "" {
+		dst.Transport = parseTransport(src.Transport)
+	}
 	if strings.TrimSpace(src.Pipe) != "" {
 		dst.Pipe = strings.TrimSpace(src.Pipe)
+	}
+	if strings.TrimSpace(src.WebSocketURL) != "" {
+		dst.WebSocketURL = strings.TrimSpace(src.WebSocketURL)
 	}
 	if strings.TrimSpace(src.Cwd) != "" {
 		dst.Cwd = strings.TrimSpace(src.Cwd)
@@ -196,8 +212,14 @@ func overlayEnvConfig(dst *service.Config) {
 	if value := envInt("LINGMA_PROXY_PORT", 0); value > 0 {
 		dst.Port = value
 	}
+	if value := strings.TrimSpace(os.Getenv("LINGMA_PROXY_TRANSPORT")); value != "" {
+		dst.Transport = parseTransport(value)
+	}
 	if value := strings.TrimSpace(os.Getenv("LINGMA_IPC_PIPE")); value != "" {
 		dst.Pipe = value
+	}
+	if value := strings.TrimSpace(os.Getenv("LINGMA_PROXY_WS_URL")); value != "" {
+		dst.WebSocketURL = value
 	}
 	if value := strings.TrimSpace(os.Getenv("LINGMA_PROXY_CWD")); value != "" {
 		dst.Cwd = value
@@ -228,6 +250,14 @@ func parseSessionMode(value string) service.SessionMode {
 		log.Fatalf("invalid session mode %q; expected auto, fresh, or reuse", value)
 		return service.SessionModeAuto
 	}
+}
+
+func parseTransport(value string) lingmaipc.Transport {
+	transport, err := lingmaipc.ParseTransport(value)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return transport
 }
 
 func lookupArgValue(flagName string) string {
@@ -269,4 +299,3 @@ func valueOr(value string, fallback string) string {
 	}
 	return fallback
 }
-
