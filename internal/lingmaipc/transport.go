@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -33,6 +35,12 @@ type DialOptions struct {
 	Transport    Transport
 	PipePath     string
 	WebSocketURL string
+}
+
+type sharedClientInfo struct {
+	WebSocketPort int    `json:"websocketPort"`
+	PID           int    `json:"pid"`
+	IPCServerPath string `json:"ipcServerPath"`
 }
 
 type framedTransport interface {
@@ -104,6 +112,11 @@ func ResolvePipePath(explicit string) (string, error) {
 	if pipe := strings.TrimSpace(os.Getenv("LINGMA_IPC_PIPE")); pipe != "" {
 		return normalizePipePath(pipe), nil
 	}
+	if info, err := resolveSharedClientInfo(); err == nil {
+		if pipe := strings.TrimSpace(info.IPCServerPath); pipe != "" {
+			return normalizePipePath(pipe), nil
+		}
+	}
 
 	entries, err := os.ReadDir(PipeDir)
 	if err != nil {
@@ -129,10 +142,32 @@ func ResolveWebSocketURL(explicit string) (string, error) {
 	if value == "" {
 		value = strings.TrimSpace(os.Getenv("LINGMA_PROXY_WS_URL"))
 	}
-	if value == "" {
-		return "", errors.New("no Lingma websocket URL configured")
+	if value != "" {
+		return normalizeWebSocketURL(value)
 	}
 
+	info, err := resolveSharedClientInfo()
+	if err != nil {
+		return "", fmt.Errorf("discover Lingma websocket URL: %w", err)
+	}
+	if info.WebSocketPort <= 0 {
+		return "", errors.New("Lingma shared client info does not include a websocketPort")
+	}
+	return normalizeWebSocketURL(fmt.Sprintf("ws://127.0.0.1:%d/", info.WebSocketPort))
+}
+
+func hasConfiguredWebSocketURL(explicit string) bool {
+	return strings.TrimSpace(explicit) != "" || strings.TrimSpace(os.Getenv("LINGMA_PROXY_WS_URL")) != ""
+}
+
+func normalizePipePath(pipe string) string {
+	if strings.HasPrefix(pipe, PipeDir) {
+		return pipe
+	}
+	return PipeDir + pipe
+}
+
+func normalizeWebSocketURL(value string) (string, error) {
 	parsed, err := url.Parse(value)
 	if err != nil {
 		return "", fmt.Errorf("parse Lingma websocket URL %q: %w", value, err)
@@ -149,15 +184,116 @@ func ResolveWebSocketURL(explicit string) (string, error) {
 	return parsed.String(), nil
 }
 
-func hasConfiguredWebSocketURL(explicit string) bool {
-	return strings.TrimSpace(explicit) != "" || strings.TrimSpace(os.Getenv("LINGMA_PROXY_WS_URL")) != ""
+func resolveSharedClientInfo() (sharedClientInfo, error) {
+	return resolveSharedClientInfoFromPaths(defaultSharedClientInfoPaths())
 }
 
-func normalizePipePath(pipe string) string {
-	if strings.HasPrefix(pipe, PipeDir) {
-		return pipe
+func defaultSharedClientInfoPaths() []string {
+	bases := make([]string, 0, 2)
+	if appData := strings.TrimSpace(os.Getenv("APPDATA")); appData != "" {
+		bases = append(bases, appData)
 	}
-	return PipeDir + pipe
+	if userConfigDir, err := os.UserConfigDir(); err == nil && strings.TrimSpace(userConfigDir) != "" {
+		bases = append(bases, userConfigDir)
+	}
+
+	seen := make(map[string]struct{})
+	paths := make([]string, 0, len(bases)*2)
+	for _, base := range bases {
+		cacheDir := filepath.Join(base, "Lingma", "SharedClientCache")
+		for _, name := range []string{".info.json", ".info"} {
+			path := filepath.Join(cacheDir, name)
+			if _, ok := seen[path]; ok {
+				continue
+			}
+			seen[path] = struct{}{}
+			paths = append(paths, path)
+		}
+	}
+	return paths
+}
+
+func resolveSharedClientInfoFromPaths(paths []string) (sharedClientInfo, error) {
+	var parseErrors []string
+	foundFile := false
+
+	for _, path := range paths {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			parseErrors = append(parseErrors, fmt.Sprintf("%s: %v", path, err))
+			continue
+		}
+		foundFile = true
+
+		info, err := parseSharedClientInfo(body)
+		if err != nil {
+			parseErrors = append(parseErrors, fmt.Sprintf("%s: %v", path, err))
+			continue
+		}
+		if info.WebSocketPort <= 0 && strings.TrimSpace(info.IPCServerPath) == "" {
+			parseErrors = append(parseErrors, fmt.Sprintf("%s: no websocketPort or ipcServerPath present", path))
+			continue
+		}
+		return info, nil
+	}
+
+	if !foundFile {
+		return sharedClientInfo{}, errors.New("no Lingma shared client cache info file was found")
+	}
+	if len(parseErrors) == 0 {
+		return sharedClientInfo{}, errors.New("Lingma shared client cache info was empty")
+	}
+	return sharedClientInfo{}, errors.New(strings.Join(parseErrors, "; "))
+}
+
+func parseSharedClientInfo(body []byte) (sharedClientInfo, error) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return sharedClientInfo{}, errors.New("file is empty")
+	}
+	if trimmed[0] == '{' {
+		var info sharedClientInfo
+		if err := json.Unmarshal(trimmed, &info); err != nil {
+			return sharedClientInfo{}, fmt.Errorf("parse JSON shared client info: %w", err)
+		}
+		return info, nil
+	}
+	return parseLegacySharedClientInfo(string(trimmed))
+}
+
+func parseLegacySharedClientInfo(body string) (sharedClientInfo, error) {
+	lines := make([]string, 0, 3)
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return sharedClientInfo{}, errors.New("legacy shared client info is empty")
+	}
+
+	port, err := strconv.Atoi(lines[0])
+	if err != nil {
+		return sharedClientInfo{}, fmt.Errorf("parse legacy websocket port %q: %w", lines[0], err)
+	}
+	info := sharedClientInfo{WebSocketPort: port}
+
+	if len(lines) >= 2 {
+		pid, err := strconv.Atoi(lines[1])
+		if err != nil {
+			return sharedClientInfo{}, fmt.Errorf("parse legacy pid %q: %w", lines[1], err)
+		}
+		info.PID = pid
+	}
+	if len(lines) >= 3 {
+		info.IPCServerPath = lines[2]
+	}
+	return info, nil
 }
 
 func connectTransport(ctx context.Context, opts DialOptions) (framedTransport, error) {
