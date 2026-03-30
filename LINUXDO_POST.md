@@ -125,12 +125,15 @@ internal/
 - 目前只支持 Windows（因为 Named Pipe）
 - 单请求限流（channel buffer=1）
 - 工具调用是 prompt 模拟的，不是原生支持
+- 需要 Lingma 进程保持开启
 
 > 有大佬如果能扒出 Lingma 原生工具调用的协议，那最好不过了。目前我是通过 prompt 注入让模型输出 action block，再解析成 tool_call，能用但不够优雅。
 
 ## 仓库
 
-代码在自托管仓库，有兴趣可以看看实现细节。
+代码开源在 GitHub：https://github.com/coolxll/lingma-ipc-proxy
+
+Release 页面可以下载编译好的 exe，不需要装 Go 环境。
 
 ---
 
