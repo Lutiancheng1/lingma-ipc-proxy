@@ -10,3 +10,4 @@ coverage.*
 .idea/
 .vscode/
 nul
+LINUXDO_POST.md
