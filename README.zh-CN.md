@@ -102,6 +102,7 @@ git push origin v0.1.0
 
 发布产物：
 
+- `lingma-ipc-proxy_<tag>_windows_amd64.exe`
 - `lingma-ipc-proxy_<tag>_windows_amd64.zip`
 - `lingma-ipc-proxy_<tag>_sha256.txt`
 

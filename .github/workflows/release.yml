@@ -35,6 +35,7 @@ jobs:
     needs: test
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+      EXE_NAME: lingma-ipc-proxy_${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}_windows_amd64.exe
       ARCHIVE_NAME: lingma-ipc-proxy_${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}_windows_amd64.zip
       CHECKSUM_NAME: lingma-ipc-proxy_${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}_sha256.txt
     steps:
@@ -55,12 +56,19 @@ jobs:
       - name: Prepare release assets
         shell: pwsh
         run: |
+          Copy-Item .\dist\lingma-ipc-proxy.exe .\$env:EXE_NAME -Force
+
+          $exePath = Join-Path $PWD $env:EXE_NAME
           $archivePath = Join-Path $PWD $env:ARCHIVE_NAME
           $checksumPath = Join-Path $PWD $env:CHECKSUM_NAME
-          Compress-Archive -Path .\dist\lingma-ipc-proxy.exe -DestinationPath $archivePath -Force
+          Compress-Archive -Path $exePath -DestinationPath $archivePath -Force
 
-          $hash = (Get-FileHash -Algorithm SHA256 $archivePath).Hash.ToLowerInvariant()
-          "$hash  $($env:ARCHIVE_NAME)" | Set-Content -NoNewline $checksumPath
+          $exeHash = (Get-FileHash -Algorithm SHA256 $exePath).Hash.ToLowerInvariant()
+          $zipHash = (Get-FileHash -Algorithm SHA256 $archivePath).Hash.ToLowerInvariant()
+          @(
+            "$exeHash  $($env:EXE_NAME)"
+            "$zipHash  $($env:ARCHIVE_NAME)"
+          ) | Set-Content $checksumPath
 
       - name: Create or update release
         uses: softprops/action-gh-release@v2
@@ -68,5 +76,6 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           generate_release_notes: true
           files: |
+            ${{ env.EXE_NAME }}
             ${{ env.ARCHIVE_NAME }}
             ${{ env.CHECKSUM_NAME }}
