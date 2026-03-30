@@ -84,6 +84,27 @@ Default output:
 dist\lingma-ipc-proxy.exe
 ```
 
+## Release
+
+GitHub Actions can publish a GitHub Release automatically.
+
+Trigger rules:
+
+- push a tag matching `v*`, for example `v0.1.0`
+- or run the `Release` workflow manually and pass a tag
+
+Example:
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Release assets:
+
+- `lingma-ipc-proxy_<tag>_windows_amd64.zip`
+- `lingma-ipc-proxy_<tag>_sha256.txt`
+
 Direct Go build command:
 
 ```powershell

@@ -1,114 +1,119 @@
 package httpapi
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
-func TestNormalizeOpenAIRequestKeepsEmulationForToolHistoryWithoutTools(t *testing.T) {
-	s := &Server{cfg: Config{EmulateToolCalls: true}}
+func TestNormalizeOpenAIRequestCollectsSystemMessages(t *testing.T) {
 	req := openAIChatRequest{
 		Model: "test-model",
 		Messages: []rawMessage{
-			{
-				Role:    "user",
-				Content: "Call ping once, then after the tool result reply FINAL_OK.",
-			},
-			{
-				Role:    "assistant",
-				Content: nil,
-				ToolCalls: []rawToolCall{
-					{
-						ID:   "call_1",
-						Type: "function",
-						Function: struct {
-							Name      string `json:"name"`
-							Arguments string `json:"arguments"`
-						}{
-							Name:      "ping",
-							Arguments: "{\"value\":\"x\"}",
-						},
-					},
-				},
-			},
-			{
-				Role:       "tool",
-				ToolCallID: "call_1",
-				Content:    "pong",
-			},
+			{Role: "system", Content: "You are concise."},
+			{Role: "user", Content: "Hello"},
+			{Role: "assistant", Content: "Hi"},
+			{Role: "system", Content: "Answer in Chinese."},
+			{Role: "tool", Content: "ignored"},
+			{Role: "user", Content: []any{
+				map[string]any{"type": "text", "text": "Follow up"},
+			}},
 		},
 	}
 
-	normalized, err := s.normalizeOpenAIRequest(req)
+	normalized, err := normalizeOpenAIRequest(req)
 	if err != nil {
 		t.Fatalf("normalizeOpenAIRequest() error = %v", err)
 	}
-	if !normalized.Emulated {
-		t.Fatalf("expected emulation to stay enabled when tool history exists")
+	if normalized.Model != "test-model" {
+		t.Fatalf("model = %q", normalized.Model)
 	}
-	if len(normalized.ChatRequest.Messages) != 3 {
-		t.Fatalf("message count = %d", len(normalized.ChatRequest.Messages))
+	if normalized.System != "You are concise.\n\nAnswer in Chinese." {
+		t.Fatalf("system = %q", normalized.System)
 	}
-	if normalized.ChatRequest.Messages[1].Role != "assistant" {
-		t.Fatalf("assistant message role = %q", normalized.ChatRequest.Messages[1].Role)
+	if len(normalized.Messages) != 3 {
+		t.Fatalf("message count = %d", len(normalized.Messages))
 	}
-	if !strings.Contains(normalized.ChatRequest.Messages[1].Text, "json action") || !strings.Contains(normalized.ChatRequest.Messages[1].Text, "\"tool\": \"ping\"") {
-		t.Fatalf("assistant tool call was not rewritten into action format: %q", normalized.ChatRequest.Messages[1].Text)
+	if normalized.Messages[0].Role != "user" || normalized.Messages[0].Text != "Hello" {
+		t.Fatalf("first message = %+v", normalized.Messages[0])
 	}
-	if normalized.ChatRequest.Messages[2].Role != "user" {
-		t.Fatalf("tool result role = %q", normalized.ChatRequest.Messages[2].Role)
+	if normalized.Messages[1].Role != "assistant" || normalized.Messages[1].Text != "Hi" {
+		t.Fatalf("second message = %+v", normalized.Messages[1])
 	}
-	if !strings.Contains(normalized.ChatRequest.Messages[2].Text, "pong") {
-		t.Fatalf("tool result was not converted into a follow-up prompt: %q", normalized.ChatRequest.Messages[2].Text)
+	if normalized.Messages[2].Role != "user" || normalized.Messages[2].Text != "Follow up" {
+		t.Fatalf("third message = %+v", normalized.Messages[2])
 	}
 }
 
-func TestNormalizeAnthropicRequestKeepsEmulationForToolHistoryWithoutTools(t *testing.T) {
-	s := &Server{cfg: Config{EmulateToolCalls: true}}
-	req := anthropicRequest{
+func TestNormalizeOpenAIRequestRejectsMissingUserAndAssistantMessages(t *testing.T) {
+	req := openAIChatRequest{
 		Model: "test-model",
+		Messages: []rawMessage{
+			{Role: "system", Content: "Only system"},
+			{Role: "tool", Content: "ignored"},
+		},
+	}
+
+	_, err := normalizeOpenAIRequest(req)
+	if err == nil {
+		t.Fatal("expected error for request without user or assistant messages")
+	}
+}
+
+func TestNormalizeAnthropicRequestExtractsStructuredText(t *testing.T) {
+	req := anthropicRequest{
+		Model:  "test-model",
+		System: []any{map[string]any{"type": "text", "text": "System prompt"}},
 		Messages: []rawMessage{
 			{
 				Role: "user",
 				Content: []any{
-					map[string]any{"type": "text", "text": "Use ping, then after the tool result reply FINAL_OK."},
+					map[string]any{"type": "text", "text": "Hello"},
 				},
 			},
 			{
 				Role: "assistant",
 				Content: []any{
-					map[string]any{"type": "tool_use", "id": "call_1", "name": "ping", "input": map[string]any{"value": "x"}},
+					map[string]any{"type": "text", "text": "Hi"},
 				},
 			},
 			{
-				Role: "user",
+				Role: "metadata",
 				Content: []any{
-					map[string]any{"type": "tool_result", "tool_use_id": "call_1", "content": []any{map[string]any{"type": "text", "text": "pong"}}},
+					map[string]any{"type": "text", "text": "ignored"},
 				},
 			},
 		},
 	}
 
-	normalized, err := s.normalizeAnthropicRequest(req)
+	normalized, err := normalizeAnthropicRequest(req)
 	if err != nil {
 		t.Fatalf("normalizeAnthropicRequest() error = %v", err)
 	}
-	if !normalized.Emulated {
-		t.Fatalf("expected emulation to stay enabled when anthropic tool history exists")
+	if normalized.Model != "test-model" {
+		t.Fatalf("model = %q", normalized.Model)
 	}
-	if len(normalized.ChatRequest.Messages) != 3 {
-		t.Fatalf("message count = %d", len(normalized.ChatRequest.Messages))
+	if normalized.System != "System prompt" {
+		t.Fatalf("system = %q", normalized.System)
 	}
-	if normalized.ChatRequest.Messages[1].Role != "assistant" {
-		t.Fatalf("assistant message role = %q", normalized.ChatRequest.Messages[1].Role)
+	if len(normalized.Messages) != 2 {
+		t.Fatalf("message count = %d", len(normalized.Messages))
 	}
-	if !strings.Contains(normalized.ChatRequest.Messages[1].Text, "json action") || !strings.Contains(normalized.ChatRequest.Messages[1].Text, "\"tool\": \"ping\"") {
-		t.Fatalf("assistant tool_use was not rewritten into action format: %q", normalized.ChatRequest.Messages[1].Text)
+	if normalized.Messages[0].Role != "user" || normalized.Messages[0].Text != "Hello" {
+		t.Fatalf("first message = %+v", normalized.Messages[0])
 	}
-	if normalized.ChatRequest.Messages[2].Role != "user" {
-		t.Fatalf("tool result role = %q", normalized.ChatRequest.Messages[2].Role)
+	if normalized.Messages[1].Role != "assistant" || normalized.Messages[1].Text != "Hi" {
+		t.Fatalf("second message = %+v", normalized.Messages[1])
 	}
-	if !strings.Contains(normalized.ChatRequest.Messages[2].Text, "pong") {
-		t.Fatalf("tool result was not converted into a follow-up prompt: %q", normalized.ChatRequest.Messages[2].Text)
+}
+
+func TestNormalizeAnthropicRequestRejectsEmptyMessages(t *testing.T) {
+	req := anthropicRequest{
+		Model: "test-model",
+		Messages: []rawMessage{
+			{Role: "user", Content: ""},
+			{Role: "assistant", Content: nil},
+		},
+	}
+
+	_, err := normalizeAnthropicRequest(req)
+	if err == nil {
+		t.Fatal("expected error for request without usable messages")
 	}
 }

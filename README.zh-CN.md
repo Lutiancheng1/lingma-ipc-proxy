@@ -84,6 +84,27 @@ cd C:\Workspace\Personal\lingma-ipc-proxy
 dist\lingma-ipc-proxy.exe
 ```
 
+## 发布
+
+GitHub Actions 可以自动发布 GitHub Release。
+
+触发方式：
+
+- 推送匹配 `v*` 的 tag，例如 `v0.1.0`
+- 或手动运行 `Release` workflow，并传入一个 tag
+
+示例：
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+发布产物：
+
+- `lingma-ipc-proxy_<tag>_windows_amd64.zip`
+- `lingma-ipc-proxy_<tag>_sha256.txt`
+
 等价的 Go 构建命令：
 
 ```powershell

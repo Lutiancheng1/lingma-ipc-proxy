@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run tests
+        run: go test ./...
+
+  build-release:
+    name: Build And Publish Release
+    runs-on: windows-latest
+    needs: test
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+      ARCHIVE_NAME: lingma-ipc-proxy_${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}_windows_amd64.zip
+      CHECKSUM_NAME: lingma-ipc-proxy_${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}_sha256.txt
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binary
+        shell: pwsh
+        run: .\scripts\build.ps1 -Clean
+
+      - name: Prepare release assets
+        shell: pwsh
+        run: |
+          $archivePath = Join-Path $PWD $env:ARCHIVE_NAME
+          $checksumPath = Join-Path $PWD $env:CHECKSUM_NAME
+          Compress-Archive -Path .\dist\lingma-ipc-proxy.exe -DestinationPath $archivePath -Force
+
+          $hash = (Get-FileHash -Algorithm SHA256 $archivePath).Hash.ToLowerInvariant()
+          "$hash  $($env:ARCHIVE_NAME)" | Set-Content -NoNewline $checksumPath
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          files: |
+            ${{ env.ARCHIVE_NAME }}
+            ${{ env.CHECKSUM_NAME }}
