@@ -9,3 +9,4 @@ dist/
 coverage.*
 .idea/
 .vscode/
+nul
