@@ -43,6 +43,7 @@ type modelResponse struct {
 	Object  string `json:"object"`
 	Created int64  `json:"created"`
 	OwnedBy string `json:"owned_by"`
+	Name    string `json:"name,omitempty"`
 }
 
 func NewServer(addr string, svc *service.Service) *Server {
@@ -122,6 +123,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			Object:  "model",
 			Created: created,
 			OwnedBy: "lingma",
+			Name:    model.Name,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
