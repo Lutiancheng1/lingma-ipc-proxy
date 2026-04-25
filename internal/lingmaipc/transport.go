@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -19,7 +18,6 @@ import (
 	"sync"
 	"time"
 
-	winio "github.com/Microsoft/go-winio"
 	"github.com/gorilla/websocket"
 )
 
@@ -74,16 +72,23 @@ func ResolveDialOptions(transport Transport, explicitPipe string, explicitWebSoc
 			return DialOptions{Transport: TransportWebSocket, WebSocketURL: wsURL}, nil
 		}
 
-		pipePath, pipeErr := ResolvePipePath(explicitPipe)
-		if pipeErr == nil {
-			return DialOptions{Transport: TransportPipe, PipePath: pipePath}, nil
+		if runtime.GOOS == "windows" {
+			pipePath, pipeErr := ResolvePipePath(explicitPipe)
+			if pipeErr == nil {
+				return DialOptions{Transport: TransportPipe, PipePath: pipePath}, nil
+			}
+			wsURL, wsErr := ResolveWebSocketURL(explicitWebSocketURL)
+			if wsErr == nil {
+				return DialOptions{Transport: TransportWebSocket, WebSocketURL: wsURL}, nil
+			}
+			return DialOptions{}, fmt.Errorf("resolve Lingma transport automatically: pipe: %w; websocket: %v", pipeErr, wsErr)
 		}
 
 		wsURL, wsErr := ResolveWebSocketURL(explicitWebSocketURL)
 		if wsErr == nil {
 			return DialOptions{Transport: TransportWebSocket, WebSocketURL: wsURL}, nil
 		}
-		return DialOptions{}, fmt.Errorf("resolve Lingma transport automatically: pipe: %w; websocket: %v", pipeErr, wsErr)
+		return DialOptions{}, fmt.Errorf("resolve Lingma transport automatically on %s: websocket: %w", runtime.GOOS, wsErr)
 	case TransportPipe:
 		pipePath, err := ResolvePipePath(explicitPipe)
 		if err != nil {
@@ -305,51 +310,6 @@ func connectTransport(ctx context.Context, opts DialOptions) (framedTransport, e
 	default:
 		return nil, fmt.Errorf("unsupported Lingma transport %q", opts.Transport)
 	}
-}
-
-type pipeTransport struct {
-	path   string
-	conn   net.Conn
-	reader *framedReader
-	write  sync.Mutex
-}
-
-func connectPipeTransport(ctx context.Context, pipePath string) (*pipeTransport, error) {
-	conn, err := winio.DialPipeContext(ctx, pipePath)
-	if err != nil {
-		return nil, fmt.Errorf("connect Lingma IPC pipe %s: %w", pipePath, err)
-	}
-	return &pipeTransport{
-		path:   pipePath,
-		conn:   conn,
-		reader: newFramedReader(conn),
-	}, nil
-}
-
-func (t *pipeTransport) ReadFrame() ([]byte, error) {
-	return t.reader.ReadFrame()
-}
-
-func (t *pipeTransport) WriteFrame(body []byte) error {
-	t.write.Lock()
-	defer t.write.Unlock()
-
-	frame := []byte(fmt.Sprintf("Content-Length: %d\r\n\r\n", len(body)))
-	if _, err := t.conn.Write(frame); err != nil {
-		return fmt.Errorf("write frame header: %w", err)
-	}
-	if _, err := t.conn.Write(body); err != nil {
-		return fmt.Errorf("write frame body: %w", err)
-	}
-	return nil
-}
-
-func (t *pipeTransport) Close() error {
-	return t.conn.Close()
-}
-
-func (t *pipeTransport) Address() string {
-	return t.path
 }
 
 type websocketTransport struct {

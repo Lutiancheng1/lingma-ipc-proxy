@@ -17,9 +17,6 @@ import (
 )
 
 const (
-	PipeDir    = `\\.\pipe\`
-	PipePrefix = "lingma-"
-
 	MetaRequestID       = "ai-coding/request-id"
 	MetaMode            = "ai-coding/mode"
 	MetaModel           = "ai-coding/model"

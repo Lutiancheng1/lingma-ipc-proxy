@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"lingma-ipc-proxy/internal/lingmaipc"
+	"lingma-ipc-proxy/internal/toolemulation"
 )
 
 type SessionMode string
@@ -42,9 +43,11 @@ type ChatMessage struct {
 }
 
 type ChatRequest struct {
-	Model    string
-	System   string
-	Messages []ChatMessage
+	Model      string
+	System     string
+	Messages   []ChatMessage
+	Tools      []toolemulation.ToolDef
+	ToolChoice toolemulation.ToolChoice
 }
 
 type ChatResult struct {
@@ -62,6 +65,7 @@ type ChatResult struct {
 	Endpoint         string
 	Transport        string
 	EffectiveSession SessionMode
+	ToolCalls        []toolemulation.ToolCall
 }
 
 type StreamEvent struct {
@@ -74,9 +78,10 @@ type StreamResult struct {
 }
 
 type Model struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Scene string `json:"scene,omitempty"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Scene      string `json:"scene,omitempty"`
+	InternalID string `json:"-"`
 }
 
 type State struct {
@@ -97,6 +102,7 @@ type Service struct {
 	transport       lingmaipc.Transport
 	stickySessionID string
 	stickyModelID   string
+	modelMap        map[string]string // official name -> internal id
 }
 
 type promptRunResult struct {
@@ -170,6 +176,16 @@ func (s *Service) ListModels(ctx context.Context) ([]Model, error) {
 	if len(models) == 0 {
 		models = []Model{{ID: "lingma", Name: "Lingma", Scene: "default"}}
 	}
+
+	s.mu.Lock()
+	s.modelMap = make(map[string]string, len(models))
+	for _, m := range models {
+		if m.InternalID != "" {
+			s.modelMap[m.ID] = m.InternalID
+		}
+	}
+	s.mu.Unlock()
+
 	return models, nil
 }
 
@@ -235,17 +251,19 @@ func (s *Service) generateLocked(
 		_ = s.deleteSessionLocked(cleanupCtx, ipcClient, sessionID)
 	}()
 
+	internalModelID := s.resolveInternalModelID(req.Model)
+
 	requestID := lingmaipc.CreateRequestID("serve")
 	meta := lingmaipc.CreateMeta(lingmaipc.MetaOptions{
 		RequestID:       requestID,
 		Mode:            s.cfg.Mode,
-		Model:           req.Model,
+		Model:           internalModelID,
 		ShellType:       s.cfg.ShellType,
 		CurrentFilePath: s.cfg.CurrentFilePath,
 		EnabledMCP:      []any{},
 	})
 
-	modelID := strings.TrimSpace(req.Model)
+	modelID := strings.TrimSpace(internalModelID)
 	if modelID != "" && s.shouldSetModel(sessionID, effectiveMode, modelID) {
 		if err := ipcClient.Request(requestCtx, "session/set_model", map[string]any{
 			"sessionId": sessionID,
@@ -284,6 +302,28 @@ func (s *Service) generateLocked(
 	}
 
 	result = s.buildChatResult(req, sessionID, requestID, prompt, runResult, effectiveMode)
+
+	if len(req.Tools) > 0 {
+		calls, remaining, parseErr := toolemulation.ParseActionBlocks(result.Text, toolemulation.Config{})
+		if parseErr == nil && len(calls) > 0 {
+			result.Text = remaining
+			result.ToolCalls = calls
+		} else if (req.ToolChoice.Mode == "any" || req.ToolChoice.Mode == "tool") && len(calls) == 0 {
+			if !toolemulation.LooksLikeRefusal(result.Text) {
+				hintPrompt := prompt + "\n\nImportant: You must use one of the available tools to answer this request. Output a \"```json action\" block."
+				retryResult, retryErr := s.runPromptLocked(requestCtx, ipcClient, sessionID, hintPrompt, requestID, meta, onDelta)
+				if retryErr == nil && retryResult != nil {
+					retryCalls, retryRemaining, retryParseErr := toolemulation.ParseActionBlocks(retryResult.AssistantText, toolemulation.Config{})
+					if retryParseErr == nil && len(retryCalls) > 0 {
+						result.Text = retryRemaining
+						result.ToolCalls = retryCalls
+						result.OutputTokens = estimateTokens(retryResult.AssistantText)
+					}
+				}
+			}
+		}
+	}
+
 	return result, nil
 }
 
@@ -546,7 +586,7 @@ func resolveSessionMode(req ChatRequest, configured SessionMode) SessionMode {
 	if configured != SessionModeAuto {
 		return configured
 	}
-	if strings.TrimSpace(req.System) != "" || len(filteredMessages(req.Messages)) > 1 {
+	if len(req.Tools) > 0 || strings.TrimSpace(req.System) != "" || len(filteredMessages(req.Messages)) > 1 {
 		return SessionModeFresh
 	}
 	return SessionModeReuse
@@ -567,13 +607,35 @@ func buildLingmaPrompt(req ChatRequest, mode SessionMode) (string, error) {
 	if mode == SessionModeReuse {
 		return lastUser, nil
 	}
-	if strings.TrimSpace(req.System) == "" && len(messages) == 1 {
+
+	system := strings.TrimSpace(req.System)
+	if len(req.Tools) > 0 {
+		system = toolemulation.InjectTooling(system, req.Tools, req.ToolChoice)
+	}
+
+	if system == "" && len(messages) == 1 {
 		return lastUser, nil
 	}
 
+	if len(req.Tools) > 0 {
+		parts := make([]string, 0, len(messages)+2)
+		if system != "" {
+			parts = append(parts, system)
+		}
+		for _, message := range messages {
+			role := "User"
+			if message.Role == "assistant" {
+				role = "Assistant"
+			}
+			parts = append(parts, fmt.Sprintf("%s: %s", role, message.Text))
+		}
+		parts = append(parts, "Assistant:")
+		return strings.Join(parts, "\n\n"), nil
+	}
+
 	parts := make([]string, 0, len(messages)+4)
-	if strings.TrimSpace(req.System) != "" {
-		parts = append(parts, "System instructions:", strings.TrimSpace(req.System))
+	if system != "" {
+		parts = append(parts, "System instructions:", system)
 	}
 	parts = append(parts, "Conversation transcript:")
 	for _, message := range messages {
@@ -627,7 +689,7 @@ func extractModels(raw any) []Model {
 				if name == "" {
 					name = id
 				}
-				seen[id] = Model{ID: id, Name: name, Scene: currentScene}
+				seen[name] = Model{ID: name, Name: name, Scene: currentScene, InternalID: id}
 			}
 			for key, child := range typed {
 				nextScene := currentScene
@@ -655,6 +717,15 @@ func extractModels(raw any) []Model {
 func likelyModelID(id string) bool {
 	lowered := strings.ToLower(id)
 	return strings.Contains(lowered, "qwen") || strings.Contains(lowered, "model") || strings.Contains(lowered, "auto") || strings.Contains(lowered, "coder")
+}
+
+func (s *Service) resolveInternalModelID(officialName string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if internalID, ok := s.modelMap[officialName]; ok && internalID != "" {
+		return internalID
+	}
+	return officialName
 }
 
 func isSceneKey(key string) bool {

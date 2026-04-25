@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"lingma-ipc-proxy/internal/service"
+	"lingma-ipc-proxy/internal/toolemulation"
 )
 
 type Server struct {
@@ -18,11 +19,13 @@ type Server struct {
 }
 
 type anthropicRequest struct {
-	Model     string       `json:"model"`
-	MaxTokens int          `json:"max_tokens,omitempty"`
-	System    any          `json:"system,omitempty"`
-	Messages  []rawMessage `json:"messages"`
-	Stream    bool         `json:"stream,omitempty"`
+	Model      string       `json:"model"`
+	MaxTokens  int          `json:"max_tokens,omitempty"`
+	System     any          `json:"system,omitempty"`
+	Messages   []rawMessage `json:"messages"`
+	Stream     bool         `json:"stream,omitempty"`
+	Tools      any          `json:"tools,omitempty"`
+	ToolChoice any          `json:"tool_choice,omitempty"`
 }
 
 type openAIChatRequest struct {
@@ -31,11 +34,15 @@ type openAIChatRequest struct {
 	Stream              bool         `json:"stream,omitempty"`
 	MaxTokens           int          `json:"max_tokens,omitempty"`
 	MaxCompletionTokens int          `json:"max_completion_tokens,omitempty"`
+	Tools               any          `json:"tools,omitempty"`
+	ToolChoice          any          `json:"tool_choice,omitempty"`
 }
 
 type rawMessage struct {
-	Role    string `json:"role"`
-	Content any    `json:"content"`
+	Role       string `json:"role"`
+	Content    any    `json:"content"`
+	ToolCalls  []any  `json:"tool_calls,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 type modelResponse struct {
@@ -170,13 +177,26 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	content := []map[string]any{{"type": "text", "text": result.Text}}
+	stopReason := "end_turn"
+	if len(result.ToolCalls) > 0 {
+		for _, tc := range result.ToolCalls {
+			content = append(content, map[string]any{
+				"type":  "tool_use",
+				"id":    tc.ID,
+				"name":  tc.Name,
+				"input": tc.Arguments,
+			})
+		}
+		stopReason = "tool_use"
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":            fmt.Sprintf("msg_%d", time.Now().UnixNano()),
 		"type":          "message",
 		"role":          "assistant",
-		"content":       []map[string]any{{"type": "text", "text": result.Text}},
+		"content":       content,
 		"model":         result.Model,
-		"stop_reason":   "end_turn",
+		"stop_reason":   stopReason,
 		"stop_sequence": nil,
 		"usage": map[string]any{
 			"input_tokens":  result.InputTokens,
@@ -224,6 +244,27 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	}
 
 	created := time.Now().Unix()
+	message := map[string]any{
+		"role":    "assistant",
+		"content": result.Text,
+	}
+	finishReason := "stop"
+	if len(result.ToolCalls) > 0 {
+		toolCalls := make([]map[string]any, 0, len(result.ToolCalls))
+		for _, tc := range result.ToolCalls {
+			argsJSON, _ := json.Marshal(tc.Arguments)
+			toolCalls = append(toolCalls, map[string]any{
+				"id":   tc.ID,
+				"type": "function",
+				"function": map[string]any{
+					"name":      tc.Name,
+					"arguments": string(argsJSON),
+				},
+			})
+		}
+		message["tool_calls"] = toolCalls
+		finishReason = "tool_calls"
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
 		"object":  "chat.completion",
@@ -231,12 +272,9 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 		"model":   result.Model,
 		"choices": []map[string]any{
 			{
-				"index": 0,
-				"message": map[string]any{
-					"role":    "assistant",
-					"content": result.Text,
-				},
-				"finish_reason": "stop",
+				"index":         0,
+				"message":       message,
+				"finish_reason": finishReason,
 			},
 		},
 		"usage": map[string]any{
@@ -254,17 +292,73 @@ func (s *Server) handleAnthropicStream(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
+		model = "lingma"
+	}
+	msgID := fmt.Sprintf("msg_%d", time.Now().UnixNano())
+
+	if len(req.Tools) > 0 {
+		result, err := s.svc.Generate(r.Context(), req)
+		if err != nil {
+			writeAnthropicError(w, http.StatusInternalServerError, "api_error", err.Error())
+			return
+		}
+		streamingHeaders(w)
+		_ = writeSSEEvent(w, flusher, "message_start", map[string]any{
+			"type": "message_start",
+			"message": map[string]any{
+				"id": msgID, "type": "message", "role": "assistant", "content": []any{},
+				"model": model, "stop_reason": nil, "stop_sequence": nil,
+				"usage": map[string]any{"input_tokens": 0, "output_tokens": 0},
+			},
+		})
+		_ = writeSSEEvent(w, flusher, "content_block_start", map[string]any{
+			"type":  "content_block_start", "index": 0,
+			"content_block": map[string]any{"type": "text", "text": ""},
+		})
+		if result.Text != "" {
+			_ = writeSSEEvent(w, flusher, "content_block_delta", map[string]any{
+				"type":  "content_block_delta", "index": 0,
+				"delta": map[string]any{"type": "text_delta", "text": result.Text},
+			})
+		}
+		_ = writeSSEEvent(w, flusher, "content_block_stop", map[string]any{
+			"type": "content_block_stop", "index": 0,
+		})
+		for i, tc := range result.ToolCalls {
+			_ = writeSSEEvent(w, flusher, "content_block_start", map[string]any{
+				"type":  "content_block_start", "index": i + 1,
+				"content_block": map[string]any{"type": "tool_use", "id": tc.ID, "name": tc.Name, "input": map[string]any{}},
+			})
+			argsJSON, _ := json.Marshal(tc.Arguments)
+			_ = writeSSEEvent(w, flusher, "content_block_delta", map[string]any{
+				"type":  "content_block_delta", "index": i + 1,
+				"delta": map[string]any{"type": "input_json_delta", "partial_json": string(argsJSON)},
+			})
+			_ = writeSSEEvent(w, flusher, "content_block_stop", map[string]any{
+				"type": "content_block_stop", "index": i + 1,
+			})
+		}
+		stopReason := "end_turn"
+		if len(result.ToolCalls) > 0 {
+			stopReason = "tool_use"
+		}
+		_ = writeSSEEvent(w, flusher, "message_delta", map[string]any{
+			"type":  "message_delta",
+			"delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nil},
+			"usage": map[string]any{"output_tokens": result.OutputTokens},
+		})
+		_ = writeSSEEvent(w, flusher, "message_stop", map[string]any{"type": "message_stop"})
+		return
+	}
+
 	events, done, err := s.svc.GenerateStream(r.Context(), req)
 	if err != nil {
 		writeAnthropicError(w, http.StatusInternalServerError, "api_error", err.Error())
 		return
 	}
 
-	model := strings.TrimSpace(req.Model)
-	if model == "" {
-		model = "lingma"
-	}
-	msgID := fmt.Sprintf("msg_%d", time.Now().UnixNano())
 	streamingHeaders(w)
 	if err := writeSSEEvent(w, flusher, "message_start", map[string]any{
 		"type": "message_start",
@@ -383,18 +477,65 @@ func (s *Server) handleOpenAIStream(w http.ResponseWriter, r *http.Request, req 
 		return
 	}
 
-	events, done, err := s.svc.GenerateStream(r.Context(), req)
-	if err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, "api_error", err.Error())
-		return
-	}
-
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
 		model = "lingma"
 	}
 	chatID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	created := time.Now().Unix()
+
+	if len(req.Tools) > 0 {
+		result, err := s.svc.Generate(r.Context(), req)
+		if err != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "api_error", err.Error())
+			return
+		}
+		streamingHeaders(w)
+		_ = writeOpenAIChunk(w, flusher, map[string]any{
+			"id": chatID, "object": "chat.completion.chunk", "created": created, "model": model,
+			"choices": []map[string]any{{"index": 0, "delta": map[string]any{"role": "assistant"}, "finish_reason": nil}},
+		})
+		if result.Text != "" {
+			_ = writeOpenAIChunk(w, flusher, map[string]any{
+				"id": chatID, "object": "chat.completion.chunk", "created": created, "model": model,
+				"choices": []map[string]any{{"index": 0, "delta": map[string]any{"content": result.Text}, "finish_reason": nil}},
+			})
+		}
+		for i, tc := range result.ToolCalls {
+			argsJSON, _ := json.Marshal(tc.Arguments)
+			_ = writeOpenAIChunk(w, flusher, map[string]any{
+				"id": chatID, "object": "chat.completion.chunk", "created": created, "model": model,
+				"choices": []map[string]any{{
+					"index": 0,
+					"delta": map[string]any{
+						"tool_calls": []map[string]any{{
+							"index": i, "id": tc.ID, "type": "function",
+							"function": map[string]any{"name": tc.Name, "arguments": string(argsJSON)},
+						}},
+					},
+					"finish_reason": nil,
+				}},
+			})
+		}
+		finishReason := "stop"
+		if len(result.ToolCalls) > 0 {
+			finishReason = "tool_calls"
+		}
+		_ = writeOpenAIChunk(w, flusher, map[string]any{
+			"id": chatID, "object": "chat.completion.chunk", "created": created, "model": model,
+			"choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finishReason}},
+		})
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+		return
+	}
+
+	events, done, err := s.svc.GenerateStream(r.Context(), req)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "api_error", err.Error())
+		return
+	}
+
 	streamingHeaders(w)
 	if err := writeOpenAIChunk(w, flusher, map[string]any{
 		"id":      chatID,
@@ -493,22 +634,41 @@ func normalizeAnthropicRequest(req anthropicRequest) (service.ChatRequest, error
 	messages := make([]service.ChatMessage, 0, len(req.Messages))
 	for _, message := range req.Messages {
 		role := strings.ToLower(strings.TrimSpace(message.Role))
-		text := strings.TrimSpace(extractText(message.Content))
-		if role != "user" && role != "assistant" {
-			continue
+		switch role {
+		case "user":
+			text, toolResults := extractAnthropicUserContent(message.Content)
+			for _, tr := range toolResults {
+				prompt := toolemulation.ActionOutputPrompt(tr.ToolUseID, tr.Content)
+				if prompt != "" {
+					messages = append(messages, service.ChatMessage{Role: "user", Text: prompt})
+				}
+			}
+			if text != "" {
+				messages = append(messages, service.ChatMessage{Role: role, Text: text})
+			}
+		case "assistant":
+			text, calls := extractAnthropicAssistantContent(message.Content)
+			projected := toolemulation.AssistantToolCallsToText(text, calls)
+			if projected != "" {
+				messages = append(messages, service.ChatMessage{Role: role, Text: projected})
+			}
 		}
-		if text == "" {
-			continue
-		}
-		messages = append(messages, service.ChatMessage{Role: role, Text: text})
 	}
 	if len(messages) == 0 {
 		return service.ChatRequest{}, fmt.Errorf("no user or assistant messages found")
 	}
+
+	toolChoice := toolemulation.ToolChoice{Mode: "auto"}
+	if req.ToolChoice != nil {
+		toolChoice = toolemulation.ExtractToolChoice(req.ToolChoice)
+	}
+
 	return service.ChatRequest{
-		Model:    strings.TrimSpace(req.Model),
-		System:   strings.TrimSpace(extractText(req.System)),
-		Messages: messages,
+		Model:      strings.TrimSpace(req.Model),
+		System:     strings.TrimSpace(extractText(req.System)),
+		Messages:   messages,
+		Tools:      toolemulation.ExtractAnthropicTools(req.Tools),
+		ToolChoice: toolChoice,
 	}, nil
 }
 
@@ -517,24 +677,41 @@ func normalizeOpenAIRequest(req openAIChatRequest) (service.ChatRequest, error) 
 	systemParts := make([]string, 0, 2)
 	for _, message := range req.Messages {
 		role := strings.ToLower(strings.TrimSpace(message.Role))
-		text := strings.TrimSpace(extractText(message.Content))
-		if text == "" {
-			continue
-		}
 		switch role {
 		case "system":
-			systemParts = append(systemParts, text)
-		case "user", "assistant":
-			messages = append(messages, service.ChatMessage{Role: role, Text: text})
+			text := strings.TrimSpace(extractText(message.Content))
+			if text != "" {
+				systemParts = append(systemParts, text)
+			}
+		case "user":
+			text := strings.TrimSpace(extractText(message.Content))
+			if text != "" {
+				messages = append(messages, service.ChatMessage{Role: role, Text: text})
+			}
+		case "assistant":
+			text := strings.TrimSpace(extractText(message.Content))
+			calls := extractOpenAIToolCalls(message.ToolCalls)
+			projected := toolemulation.AssistantToolCallsToText(text, calls)
+			if projected != "" {
+				messages = append(messages, service.ChatMessage{Role: role, Text: projected})
+			}
+		case "tool":
+			output := strings.TrimSpace(extractText(message.Content))
+			prompt := toolemulation.ActionOutputPrompt(message.ToolCallID, output)
+			if prompt != "" {
+				messages = append(messages, service.ChatMessage{Role: "user", Text: prompt})
+			}
 		}
 	}
 	if len(messages) == 0 {
 		return service.ChatRequest{}, fmt.Errorf("no user or assistant messages found")
 	}
 	return service.ChatRequest{
-		Model:    strings.TrimSpace(req.Model),
-		System:   strings.Join(systemParts, "\n\n"),
-		Messages: messages,
+		Model:      strings.TrimSpace(req.Model),
+		System:     strings.Join(systemParts, "\n\n"),
+		Messages:   messages,
+		Tools:      toolemulation.ExtractTools(req.Tools),
+		ToolChoice: toolemulation.ExtractToolChoice(req.ToolChoice),
 	}, nil
 }
 
@@ -680,4 +857,118 @@ func (s *Server) release() {
 	case <-s.sem:
 	default:
 	}
+}
+
+func extractOpenAIToolCalls(raw []any) []toolemulation.ToolCall {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make([]toolemulation.ToolCall, 0, len(raw))
+	for _, item := range raw {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		id := stringFromAny(m["id"])
+		fn, ok := m["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		name := stringFromAny(fn["name"])
+		if name == "" {
+			continue
+		}
+		argsRaw := stringFromAny(fn["arguments"])
+		var args map[string]any
+		if argsRaw != "" {
+			_ = json.Unmarshal([]byte(argsRaw), &args)
+		}
+		out = append(out, toolemulation.ToolCall{
+			ID:        id,
+			Name:      name,
+			Arguments: args,
+		})
+	}
+	return out
+}
+
+type anthropicToolResult struct {
+	ToolUseID string
+	Content   string
+}
+
+func extractAnthropicUserContent(content any) (string, []anthropicToolResult) {
+	text := extractText(content)
+	items, ok := content.([]any)
+	if !ok {
+		return text, nil
+	}
+	var results []anthropicToolResult
+	var textParts []string
+	for _, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch stringFromAny(m["type"]) {
+		case "text":
+			if t := stringFromAny(m["text"]); t != "" {
+				textParts = append(textParts, t)
+			}
+		case "tool_result":
+			toolUseID := stringFromAny(m["tool_use_id"])
+			resultText := extractText(m["content"])
+			if resultText != "" {
+				results = append(results, anthropicToolResult{
+					ToolUseID: toolUseID,
+					Content:   resultText,
+				})
+			}
+		}
+	}
+	if len(textParts) > 0 {
+		text = strings.Join(textParts, "\n")
+	}
+	return text, results
+}
+
+func extractAnthropicAssistantContent(content any) (string, []toolemulation.ToolCall) {
+	text := extractText(content)
+	items, ok := content.([]any)
+	if !ok {
+		return text, nil
+	}
+	calls := make([]toolemulation.ToolCall, 0, len(items))
+	var textParts []string
+	for _, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch stringFromAny(m["type"]) {
+		case "text":
+			if t := stringFromAny(m["text"]); t != "" {
+				textParts = append(textParts, t)
+			}
+		case "tool_use":
+			id := stringFromAny(m["id"])
+			name := stringFromAny(m["name"])
+			if name == "" {
+				continue
+			}
+			var args map[string]any
+			if rawInput, ok := m["input"].(map[string]any); ok {
+				args = rawInput
+			}
+			calls = append(calls, toolemulation.ToolCall{
+				ID:        id,
+				Name:      name,
+				Arguments: args,
+			})
+		}
+	}
+	if len(textParts) > 0 {
+		text = strings.Join(textParts, "\n")
+	}
+	return text, calls
 }

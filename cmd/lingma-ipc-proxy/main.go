@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -88,7 +89,7 @@ func loadConfig() (service.Config, string) {
 		Transport:   lingmaipc.TransportAuto,
 		Cwd:         currentDir(),
 		Mode:        "agent",
-		ShellType:   "powershell",
+		ShellType:   defaultShellType(),
 		SessionMode: service.SessionModeAuto,
 		Timeout:     120 * time.Second,
 	}
@@ -298,4 +299,11 @@ func valueOr(value string, fallback string) string {
 		return strings.TrimSpace(value)
 	}
 	return fallback
+}
+
+func defaultShellType() string {
+	if runtime.GOOS == "windows" {
+		return "powershell"
+	}
+	return "zsh"
 }

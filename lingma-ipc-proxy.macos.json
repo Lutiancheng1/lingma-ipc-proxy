@@ -1,0 +1,10 @@
+{
+  "host": "127.0.0.1",
+  "port": 8095,
+  "transport": "websocket",
+  "mode": "agent",
+  "shell_type": "zsh",
+  "session_mode": "auto",
+  "timeout": 120,
+  "cwd": "/Users/tiancheng"
+}

@@ -14,6 +14,8 @@ Current scope:
 - one request at a time
 - supports Windows named-pipe transport and local websocket transport
 - directly uses Lingma IPC, not DOM/CDP
+- OpenAI-compatible `tools` / `tool_choice` support (tool emulation via prompt engineering)
+- Anthropic-compatible `tools` / `tool_choice` support
 
 ## Run
 
@@ -66,6 +68,41 @@ Recommended layout:
   "current_file_path": "",
   "pipe": "",
   "websocket_url": ""
+}
+```
+
+## macOS / Linux
+
+This project also works on macOS and Linux via **WebSocket transport**. The Windows named-pipe transport is automatically skipped on non-Windows platforms.
+
+### Run on macOS
+
+```bash
+cd ~/OpenSources/lingma-ipc-proxy
+go run ./cmd/lingma-ipc-proxy --transport websocket --port 8095
+
+# Or use auto-detect (will discover websocket port from Lingma's shared client cache)
+go run ./cmd/lingma-ipc-proxy --port 8095
+```
+
+### Build on macOS / Linux
+
+```bash
+cd ~/OpenSources/lingma-ipc-proxy
+go build -o ./dist/lingma-ipc-proxy ./cmd/lingma-ipc-proxy
+```
+
+### macOS Config Example
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 8095,
+  "transport": "websocket",
+  "mode": "agent",
+  "shell_type": "zsh",
+  "session_mode": "auto",
+  "timeout": 120
 }
 ```
 
