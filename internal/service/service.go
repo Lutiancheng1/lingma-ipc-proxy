@@ -721,11 +721,7 @@ func resolveSessionMode(req ChatRequest, configured SessionMode) SessionMode {
 	if configured != SessionModeAuto {
 		return configured
 	}
-	hasTools := len(req.Tools) > 0 && req.ToolChoice.Mode != "none"
-	if hasTools || strings.TrimSpace(req.System) != "" || len(filteredMessages(req.Messages)) > 1 {
-		return SessionModeFresh
-	}
-	return SessionModeReuse
+	return SessionModeFresh
 }
 
 func extractLastUserImages(messages []ChatMessage) []Image {

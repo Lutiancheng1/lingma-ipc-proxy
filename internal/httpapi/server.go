@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,7 +82,7 @@ type modelResponse struct {
 func NewServer(addr string, svc *service.Service) *Server {
 	s := &Server{
 		svc: svc,
-		sem: make(chan struct{}, 1),
+		sem: make(chan struct{}, maxConcurrentRequests()),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleRoot)
@@ -189,8 +191,8 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		writeAnthropicError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
-	if !s.tryAcquire() {
-		writeAnthropicError(w, http.StatusTooManyRequests, "rate_limit_error", "Lingma IPC proxy handles one request at a time.")
+	if !s.acquire(r.Context()) {
+		writeAnthropicError(w, http.StatusRequestTimeout, "timeout_error", "request was cancelled while waiting for a proxy execution slot")
 		return
 	}
 	defer s.release()
@@ -260,8 +262,8 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
-	if !s.tryAcquire() {
-		writeOpenAIError(w, http.StatusTooManyRequests, "rate_limit_error", "Lingma IPC proxy handles one request at a time.")
+	if !s.acquire(r.Context()) {
+		writeOpenAIError(w, http.StatusRequestTimeout, "timeout_error", "request was cancelled while waiting for a proxy execution slot")
 		return
 	}
 	defer s.release()
@@ -971,11 +973,26 @@ func withCORS(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) tryAcquire() bool {
+func maxConcurrentRequests() int {
+	raw := strings.TrimSpace(os.Getenv("LINGMA_PROXY_MAX_CONCURRENT"))
+	if raw == "" {
+		return 4
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return 4
+	}
+	if n > 16 {
+		return 16
+	}
+	return n
+}
+
+func (s *Server) acquire(ctx context.Context) bool {
 	select {
 	case s.sem <- struct{}{}:
 		return true
-	default:
+	case <-ctx.Done():
 		return false
 	}
 }

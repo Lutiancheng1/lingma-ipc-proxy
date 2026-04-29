@@ -11,7 +11,7 @@
 
 ## 当前版本
 
-当前桌面端版本线：`v1.2.0`
+当前桌面端版本线：`v1.2.1`
 
 GitHub Actions 会在 Release 中产出：
 
@@ -328,6 +328,27 @@ export ANTHROPIC_API_KEY="any"
 4. 命令行参数
 5. 桌面端设置页保存的配置
 
+## 并发请求
+
+旧版本为了避免 Lingma 会话串扰，在 HTTP 层做了全局单请求限制，所以并发请求会返回：
+
+```json
+{"error":{"message":"Lingma IPC proxy handles one request at a time.","type":"rate_limit_error"},"type":"error"}
+```
+
+现在已经改成有限并发执行池：
+
+- 默认最多同时处理 `4` 个 Chat 请求。
+- 可以用 `LINGMA_PROXY_MAX_CONCURRENT` 覆盖。
+- 合法范围是 `1` 到 `16`。
+- `session_mode=auto` 默认使用 fresh Lingma 会话，避免多个编辑器并发请求挤到同一个 sticky session 里串上下文。
+
+示例：
+
+```bash
+LINGMA_PROXY_MAX_CONCURRENT=8 lingma-ipc-proxy --port 8095
+```
+
 ## 工具调用实现
 
 Lingma 插件本身没有公开标准 OpenAI / Anthropic Tools 协议，所以本项目使用 **Tool Emulation**：
@@ -394,8 +415,8 @@ Lingma IPC Proxy
 发布方式：
 
 ```bash
-git tag v1.2.0
-git push origin v1.2.0
+git tag v1.2.1
+git push origin v1.2.1
 ```
 
 也可以在 GitHub Actions 页面手动运行 `Release` workflow，并输入 tag。

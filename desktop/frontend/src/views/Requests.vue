@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ClearRequests, GetRequests } from '../../wailsjs/go/main/App.js'
 import { ClipboardSetText, EventsOff, EventsOn } from '../../wailsjs/runtime'
+import JsonViewer from '../components/JsonViewer.vue'
 
 const emit = defineEmits(['notice'])
 
@@ -137,7 +138,12 @@ onUnmounted(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(request, index) in filtered" :key="index" @click="selectRow(index)">
+            <tr
+              v-for="(request, index) in filtered"
+              :key="index"
+              :class="{ selected: selected === index }"
+              @click="selectRow(index)"
+            >
               <td>{{ request.time }}</td>
               <td><span class="method-chip">{{ request.method }}</span></td>
               <td>
@@ -162,7 +168,7 @@ onUnmounted(() => {
               </button>
             </div>
           </div>
-          <pre>{{ filtered[selected].reqBody || '空请求体' }}</pre>
+          <JsonViewer :body="filtered[selected].reqBody" empty-text="空请求体" />
         </div>
         <div class="detail-section">
           <div class="detail-toolbar">
@@ -173,7 +179,7 @@ onUnmounted(() => {
               </button>
             </div>
           </div>
-          <pre>{{ filtered[selected].respBody || '空响应体' }}</pre>
+          <JsonViewer :body="filtered[selected].respBody" empty-text="空响应体" />
         </div>
       </div>
     </section>

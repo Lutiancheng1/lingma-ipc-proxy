@@ -8,7 +8,7 @@ The project is designed for tools such as Claude Code, Cline, Continue, OpenCode
 
 ## Current Version
 
-The current desktop line is `v1.2.0`.
+The current desktop line is `v1.2.1`.
 
 Release builds are produced by GitHub Actions for:
 
@@ -249,6 +249,21 @@ Priority order:
 4. command-line flags
 5. desktop Settings page updates
 
+## Concurrency
+
+Older builds rejected concurrent chat requests with a `rate_limit_error` saying the proxy handled one request at a time. Current builds use a small execution pool instead:
+
+- default max concurrent chat requests: `4`
+- override with `LINGMA_PROXY_MAX_CONCURRENT`
+- allowed range: `1` to `16`
+- `session_mode=auto` uses fresh Lingma sessions so parallel editor requests do not share one sticky session
+
+Example:
+
+```bash
+LINGMA_PROXY_MAX_CONCURRENT=8 lingma-ipc-proxy --port 8095
+```
+
 ## Function Calling / Tool Calling
 
 Lingma does not expose a native public OpenAI/Anthropic tool-call protocol, so this proxy emulates tool calling:
@@ -291,7 +306,7 @@ The desktop bundle name is always `Lingma IPC Proxy`.
 
 The release workflow is triggered by:
 
-- pushing a tag such as `v1.2.0`
+- pushing a tag such as `v1.2.1`
 - manually running the `Release` workflow with a tag input
 
 Planned improvements:
