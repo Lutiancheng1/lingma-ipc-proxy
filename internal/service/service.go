@@ -352,32 +352,40 @@ func (s *Service) generateLocked(
 		if parseErr == nil && len(calls) > 0 {
 			result.Text = remaining
 			result.ToolCalls = calls
-		} else if (req.ToolChoice.Mode == "any" || req.ToolChoice.Mode == "tool") && len(calls) == 0 {
-			if !toolemulation.LooksLikeRefusal(result.Text) {
-				hintPrompt := prompt + "\n\n" + toolemulation.ForceToolingPrompt(req.ToolChoice)
-				retryRequestID := lingmaipc.CreateRequestID("retry")
-				retryMeta := lingmaipc.CreateMeta(lingmaipc.MetaOptions{
-					RequestID:       retryRequestID,
-					Mode:            s.cfg.Mode,
-					Model:           internalModelID,
-					ShellType:       s.cfg.ShellType,
-					CurrentFilePath: s.cfg.CurrentFilePath,
-					EnabledMCP:      []any{},
-				})
-				retryResult, retryErr := s.runPromptLocked(requestCtx, ipcClient, sessionID, hintPrompt, nil, retryRequestID, retryMeta, onDelta)
-				if retryErr == nil && retryResult != nil {
-					retryCalls, retryRemaining, retryParseErr := toolemulation.ParseActionBlocks(retryResult.AssistantText, req.Tools, toolemulation.Config{})
-					if retryParseErr == nil && len(retryCalls) > 0 {
-						result.Text = retryRemaining
-						result.ToolCalls = retryCalls
-						result.OutputTokens = estimateTokens(retryResult.AssistantText)
-					}
+		} else if shouldRetryTooling(req.ToolChoice, result.Text) {
+			hintPrompt := prompt + "\n\n" + toolemulation.ForceToolingPrompt(req.ToolChoice)
+			retryRequestID := lingmaipc.CreateRequestID("retry")
+			retryMeta := lingmaipc.CreateMeta(lingmaipc.MetaOptions{
+				RequestID:       retryRequestID,
+				Mode:            s.cfg.Mode,
+				Model:           internalModelID,
+				ShellType:       s.cfg.ShellType,
+				CurrentFilePath: s.cfg.CurrentFilePath,
+				EnabledMCP:      []any{},
+			})
+			retryResult, retryErr := s.runPromptLocked(requestCtx, ipcClient, sessionID, hintPrompt, nil, retryRequestID, retryMeta, onDelta)
+			if retryErr == nil && retryResult != nil {
+				retryCalls, retryRemaining, retryParseErr := toolemulation.ParseActionBlocks(retryResult.AssistantText, req.Tools, toolemulation.Config{})
+				if retryParseErr == nil && len(retryCalls) > 0 {
+					result.Text = retryRemaining
+					result.ToolCalls = retryCalls
+					result.OutputTokens = estimateTokens(retryResult.AssistantText)
 				}
 			}
 		}
 	}
 
 	return result, nil
+}
+
+func shouldRetryTooling(choice toolemulation.ToolChoice, text string) bool {
+	switch choice.Mode {
+	case "any", "tool":
+		return true
+	case "none":
+		return false
+	}
+	return toolemulation.LooksLikeRefusal(text) || toolemulation.LooksLikeMissedToolUse(text)
 }
 
 func (s *Service) buildChatResult(

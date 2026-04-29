@@ -9,5 +9,8 @@
   "author": {
     "name": "lutc5",
     "email": "lutc5@asiainfo.com"
+  },
+  "info": {
+    "productVersion": "1.3.0"
   }
 }

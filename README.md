@@ -8,7 +8,7 @@ The project is designed for tools such as Claude Code, Cline, Continue, OpenCode
 
 ## Current Version
 
-The current desktop line is `v1.2.2`.
+The current desktop line is `v1.3.0`.
 
 Release builds are produced by GitHub Actions for:
 
@@ -52,7 +52,10 @@ Narrow window layout:
 | --- | --- | --- |
 | Health | `GET /` and `GET /health` | supported |
 | Models | `GET /v1/models` | supported |
+| Capability Discovery | `GET /capabilities`, `GET /v1/capabilities` | supported |
+| LM Studio / Ollama Discovery | `GET /api/v1/models`, `GET /api/tags`, `GET /props` | supported |
 | OpenAI Chat Completions | `POST /v1/chat/completions` | streaming and non-streaming |
+| OpenAI Chat Alias | `POST /api/v1/chat/completions` | supported |
 | Anthropic Messages | `POST /v1/messages` | streaming and non-streaming |
 
 ## What This Fork Adds
@@ -61,7 +64,10 @@ Compared with the original protocol proof of concept, this repository focuses on
 
 - **Function Calling / Tools** for both OpenAI and Anthropic clients.
 - **Tool result continuation** for multi-step agent loops.
+- **Tool stability hardening** with proxy-side routing hints, core tool examples, missed-tool retry, and common alias mapping such as `Bash` to `terminal` and `Read` to `read_file`.
 - **Image input** for OpenAI `image_url` and Anthropic image blocks.
+- **Local and remote image normalization** for data URLs, HTTP URLs, `file://` URLs, and absolute local paths, with automatic JPEG downscaling for large images.
+- **Request log image redaction** so large base64 payloads are visible as image markers instead of breaking the desktop log view.
 - **More request parameter compatibility** so stricter clients can connect without custom patches.
 - **Full request and response recording** in the desktop app for debugging 400/500 errors.
 - **macOS and Windows desktop app** with start/stop/restart, settings, logs, model discovery, themes, and window lifecycle handling.
@@ -77,7 +83,7 @@ The proxy accepts common OpenAI request fields:
 - `presence_penalty`, `frequency_penalty`
 - `tools`, `tool_choice`, `parallel_tool_calls`
 - `response_format`, `seed`, `user`, `reasoning_effort`
-- image input through `image_url` data URLs or HTTP URLs
+- image input through `image_url` data URLs, HTTP URLs, `file://` URLs, and absolute local paths
 
 ### Anthropic Compatibility
 
@@ -133,7 +139,7 @@ If auto detection fails, set the path manually in the desktop Settings page or p
 
 ```bash
 lingma-ipc-proxy --transport websocket --ws-url ws://127.0.0.1:36510 --port 8095
-lingma-ipc-proxy --transport pipe --pipe-name '\\.\pipe\lingma-ipc'
+lingma-ipc-proxy --transport pipe --pipe '\\.\pipe\lingma-ipc'
 ```
 
 ## Quick Start
@@ -175,7 +181,7 @@ export ANTHROPIC_API_KEY="any"
 Then select a model in Claude Code:
 
 ```text
-/model Qwen3-Coder
+/model MiniMax-M2.7
 ```
 
 ### Cline
@@ -183,7 +189,7 @@ Then select a model in Claude Code:
 - Provider: `OpenAI Compatible`
 - Base URL: `http://127.0.0.1:8095/v1`
 - API Key: `any`
-- Model ID: `Qwen3-Coder`
+- Model ID: `MiniMax-M2.7`
 
 ### Continue
 
@@ -193,7 +199,7 @@ Then select a model in Claude Code:
     {
       "title": "Lingma Proxy",
       "provider": "openai",
-      "model": "Qwen3-Coder",
+      "model": "MiniMax-M2.7",
       "apiKey": "any",
       "apiBase": "http://127.0.0.1:8095/v1"
     }
@@ -215,7 +221,19 @@ Observed model IDs include:
 - `Qwen3-Thinking`
 - `Qwen3.6-Plus`
 
-For tool-heavy coding workflows, `Qwen3-Coder` is the recommended first choice.
+### Model Metadata and Recommendation
+
+The proxy only reports models actually exposed by your Lingma plugin. The table below combines official model information where available with local proxy testing. If Lingma exposes a model name without public model-card metadata, the README marks it as observed rather than inventing a context length.
+
+| Model | Best use | Context / capability basis |
+| --- | --- | --- |
+| `MiniMax-M2.7` | Default recommendation for third-party agents | NVIDIA's [MiniMax M2.7 model card](https://developer.nvidia.com/blog/minimax-m2-7-advances-scalable-agentic-workflows-on-nvidia-platforms-for-complex-ai-applications/) describes a language MoE model with 200K input context and agentic use cases; local proxy testing passed read/search/terminal/web/patch/vision smoke tests. |
+| `Kimi-K2.6` | Multimodal and long-context agent work | Kimi's [official API docs](https://platform.kimi.ai/docs/guide/kimi-k2-6-quickstart) describe native text/image/video input, a 256K context window, and multi-step tool invocation support. |
+| `Qwen3-Coder` | Code-specialized fallback | Qwen's [official blog](https://qwenlm.github.io/blog/qwen3-coder/) describes 256K native context, up to 1M with extrapolation, and agentic coding/tool protocols. |
+| `Qwen3.6-Plus` | General/vision fallback | Exposed by Lingma and passed local smoke tests, but this repository does not have an official Lingma-specific context-length source for it. |
+| `Qwen3-Max` | Fast general/vision model | Exposed by Lingma and strong in simple tests, but less stable on forced edit/read tool calls in this proxy. |
+
+Default model when the client omits `model`: `MiniMax-M2.7`.
 
 ## Configuration
 
@@ -274,7 +292,14 @@ Lingma does not expose a native public OpenAI/Anthropic tool-call protocol, so t
 4. Convert parsed actions back into OpenAI `tool_calls` or Anthropic `tool_use`.
 5. Feed tool results back into Lingma for continuation.
 
-This is most reliable with `Qwen3-Coder`.
+Current proxy hardening includes:
+
+- a generated tool routing table based on the client's actual tool names
+- dedicated examples for `read_file`, `search_files`, `terminal`, and `web_search`
+- automatic retry when the model says it cannot access files, terminal, or web despite tools being present
+- common tool alias normalization such as `Bash` -> `terminal`, `Read` -> `read_file`, `Grep` -> `search_files`, and `Edit` -> `patch`
+
+In local smoke tests after this hardening, `MiniMax-M2.7`, `Kimi-K2.6`, `Qwen3.6-Plus`, and `Qwen3-Coder` all completed read/search/terminal/web/patch/vision checks, with `MiniMax-M2.7` having the lowest average latency in the tested set.
 
 ## Local Desktop Build
 
@@ -306,7 +331,7 @@ The desktop bundle name is always `Lingma IPC Proxy`.
 
 The release workflow is triggered by:
 
-- pushing a tag such as `v1.2.2`
+- pushing a tag such as `v1.3.0`
 - manually running the `Release` workflow with a tag input
 
 Planned improvements:

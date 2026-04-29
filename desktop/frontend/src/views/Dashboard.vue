@@ -383,7 +383,7 @@ onUnmounted(() => {
               <td>{{ request.time }}</td>
               <td>{{ request.method }}</td>
               <td>{{ request.path }}</td>
-              <td>{{ request.model || 'Qwen3-Coder' }}</td>
+              <td>{{ request.model || status.model || 'MiniMax-M2.7' }}</td>
               <td><span class="status-chip" :class="statusClass(request.statusCode)">{{ request.statusCode }}</span></td>
               <td>{{ request.duration }}</td>
               <td>{{ request.size || '2.1 KB' }}</td>

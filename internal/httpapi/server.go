@@ -6,8 +6,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/gif"
+	"image/jpeg"
+	_ "image/png"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -87,9 +92,17 @@ func NewServer(addr string, svc *service.Service) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleRoot)
 	mux.HandleFunc("/health", s.handleRoot)
+	mux.HandleFunc("/capabilities", s.handleCapabilities)
+	mux.HandleFunc("/v1/capabilities", s.handleCapabilities)
 	mux.HandleFunc("/v1/models", s.handleModels)
+	mux.HandleFunc("/api/v1/models", s.handleLMStudioModels)
+	mux.HandleFunc("/api/tags", s.handleOllamaTags)
+	mux.HandleFunc("/v1/props", s.handleModelProps)
+	mux.HandleFunc("/props", s.handleModelProps)
+	mux.HandleFunc("/version", s.handleVersion)
 	mux.HandleFunc("/v1/messages", s.handleAnthropicMessages)
 	mux.HandleFunc("/v1/chat/completions", s.handleOpenAIChatCompletions)
+	mux.HandleFunc("/api/v1/chat/completions", s.handleOpenAIChatCompletions)
 
 	s.http = &http.Server{
 		Addr:              addr,
@@ -179,6 +192,198 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
 		"data":   data,
+	})
+}
+
+func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"service": "lingma-ipc-proxy",
+		"protocols": []string{
+			"openai.chat_completions",
+			"anthropic.messages",
+			"lm_studio.discovery",
+			"ollama.discovery",
+			"llamacpp.discovery",
+			"vllm.discovery",
+		},
+		"features": map[string]any{
+			"streaming":                true,
+			"tools":                    true,
+			"tool_prompt_emulation":    true,
+			"tool_alias_mapping":       true,
+			"images":                   true,
+			"local_image_paths":        true,
+			"remote_image_urls":        true,
+			"image_auto_resize":        true,
+			"request_log_image_redact": true,
+		},
+		"recommended_models": map[string]any{
+			"default":     "MiniMax-M2.7",
+			"agent_tools": []string{"MiniMax-M2.7", "Kimi-K2.6", "Qwen3-Coder", "Qwen3.6-Plus"},
+			"vision":      []string{"Kimi-K2.6", "Qwen3-Max", "Qwen3.6-Plus", "MiniMax-M2.7", "Auto"},
+			"coding":      []string{"MiniMax-M2.7", "Qwen3-Coder", "Kimi-K2.6"},
+		},
+		"model_metadata": map[string]any{
+			"Kimi-K2.6": map[string]any{
+				"context_window_tokens": 256000,
+				"modalities":            []string{"text", "image", "video"},
+				"capabilities":          []string{"agent", "coding", "tool_use", "vision"},
+				"basis":                 "official_kimi_docs",
+				"source":                "https://platform.kimi.ai/docs/guide/kimi-k2-6-quickstart",
+			},
+			"Qwen3-Coder": map[string]any{
+				"context_window_tokens": 256000,
+				"context_window_note":   "native 256K; official Qwen material describes extension up to 1M with extrapolation",
+				"modalities":            []string{"text"},
+				"capabilities":          []string{"agentic_coding", "tool_use"},
+				"basis":                 "official_qwen_docs",
+				"source":                "https://qwenlm.github.io/blog/qwen3-coder/",
+			},
+			"MiniMax-M2.7": map[string]any{
+				"context_window_tokens": 204800,
+				"modalities":            []string{"text"},
+				"capabilities":          []string{"agent", "coding", "tool_use", "skills"},
+				"basis":                 "minimax_and_nvidia_model_cards",
+				"source":                "https://developer.nvidia.com/blog/minimax-m2-7-advances-scalable-agentic-workflows-on-nvidia-platforms-for-complex-ai-applications/",
+			},
+			"Qwen3.6-Plus": map[string]any{
+				"context_window_tokens": nil,
+				"modalities":            []string{"text", "image"},
+				"capabilities":          []string{"general", "vision_observed_via_lingma"},
+				"basis":                 "observed_via_lingma_proxy; no official Lingma-specific context length published in this proxy",
+			},
+		},
+		"endpoints": map[string]any{
+			"openai_chat":        []string{"/v1/chat/completions", "/api/v1/chat/completions"},
+			"anthropic_messages": "/v1/messages",
+			"models":             []string{"/v1/models", "/api/v1/models", "/api/tags"},
+			"capabilities":       []string{"/capabilities", "/v1/capabilities"},
+			"props":              []string{"/props", "/v1/props"},
+			"version":            "/version",
+		},
+	})
+}
+
+func (s *Server) handleLMStudioModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+
+	models, err := s.svc.ListModels(r.Context())
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "api_error", err.Error())
+		return
+	}
+
+	items := make([]map[string]any, 0, len(models))
+	for _, model := range models {
+		items = append(items, map[string]any{
+			"id":                 model.ID,
+			"key":                model.ID,
+			"display_name":       model.Name,
+			"type":               "llm",
+			"publisher":          "lingma",
+			"max_context_length": 128000,
+			"loaded_instances": []map[string]any{
+				{
+					"id":    model.ID,
+					"model": model.ID,
+					"config": map[string]any{
+						"context_length": 128000,
+					},
+				},
+			},
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": items})
+}
+
+func (s *Server) handleOllamaTags(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+
+	models, err := s.svc.ListModels(r.Context())
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "api_error", err.Error())
+		return
+	}
+
+	items := make([]map[string]any, 0, len(models))
+	for _, model := range models {
+		items = append(items, map[string]any{
+			"name":        model.ID,
+			"model":       model.ID,
+			"modified_at": time.Now().UTC().Format(time.RFC3339),
+			"size":        0,
+			"digest":      "",
+			"details": map[string]any{
+				"family":             "lingma",
+				"families":           []string{"lingma"},
+				"parameter_size":     "",
+				"quantization_level": "",
+			},
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": items})
+}
+
+func (s *Server) handleModelProps(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+
+	model := strings.TrimSpace(s.svc.DefaultModel())
+	if model == "" {
+		model = "MiniMax-M2.7"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"model_alias":   model,
+		"chat_template": "{{ .Messages }}",
+		"default_generation_settings": map[string]any{
+			"n_ctx":       128000,
+			"temperature": 0.7,
+			"top_p":       1,
+		},
+	})
+}
+
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"version": "lingma-ipc-proxy",
+		"service": "lingma-ipc-proxy",
 	})
 }
 
@@ -947,17 +1152,103 @@ func (s *Server) withRecorder(next http.Handler) http.Handler {
 		if r.Body != nil && r.Body != http.NoBody {
 			body, _ := io.ReadAll(r.Body)
 			r.Body = io.NopCloser(bytes.NewReader(body))
-			reqBody = string(body)
+			reqBody = sanitizeRecordedBody(body)
 		}
 
 		rw := &recordingResponseWriter{ResponseWriter: w, statusCode: 200}
 		next.ServeHTTP(rw, r)
 		duration := time.Since(start)
 
-		respBody := string(rw.body)
+		respBody := sanitizeRecordedBody(rw.body)
 
 		go s.OnRequest(r.Method, r.URL.Path, rw.statusCode, duration, reqBody, respBody)
 	})
+}
+
+func sanitizeRecordedBody(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var value any
+	if err := json.Unmarshal(body, &value); err != nil {
+		return truncateRecordedString(string(body))
+	}
+	return truncateRecordedString(string(mustMarshalJSON(redactRecordedValue(value))))
+}
+
+func redactRecordedValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for k, v := range typed {
+			lower := strings.ToLower(k)
+			if lower == "data" || lower == "url" {
+				if s := stringFromAny(v); looksLikeImagePayload(s) {
+					out[k] = imageRedaction(s)
+					continue
+				}
+			}
+			out[k] = redactRecordedValue(v)
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, redactRecordedValue(item))
+		}
+		return out
+	case string:
+		if looksLikeImagePayload(typed) {
+			return imageRedaction(typed)
+		}
+		if len(typed) > 12000 {
+			return typed[:12000] + "... [truncated]"
+		}
+		return typed
+	default:
+		return typed
+	}
+}
+
+func looksLikeImagePayload(value string) bool {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "data:image/") {
+		return true
+	}
+	if len(value) > 4096 && isLikelyBase64(value) {
+		return true
+	}
+	return false
+}
+
+func imageRedaction(value string) string {
+	return fmt.Sprintf("[image payload redacted, %d chars]", len(value))
+}
+
+func isLikelyBase64(value string) bool {
+	for _, r := range value {
+		if r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '+' || r == '/' || r == '=' || r == '\n' || r == '\r' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func mustMarshalJSON(value any) []byte {
+	body, err := json.Marshal(value)
+	if err != nil {
+		return []byte("{}")
+	}
+	return body
+}
+
+func truncateRecordedString(value string) string {
+	const maxRecordedBody = 120000
+	if len(value) <= maxRecordedBody {
+		return value
+	}
+	return value[:maxRecordedBody] + "... [truncated]"
 }
 
 func withCORS(next http.Handler) http.Handler {
@@ -1194,13 +1485,68 @@ func extractAnthropicImages(content any) []service.Image {
 
 func parseImageURL(url string) *service.Image {
 	if strings.HasPrefix(url, "data:") {
-		return parseDataURL(url)
+		return normalizeImage(parseDataURL(url))
+	}
+	if img := parseLocalImagePath(url); img != nil {
+		return normalizeImage(img)
 	}
 	img, err := fetchImageAsBase64(url)
 	if err != nil {
 		return nil
 	}
-	return img
+	return normalizeImage(img)
+}
+
+func parseLocalImagePath(raw string) *service.Image {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+
+	path := raw
+	if strings.HasPrefix(raw, "file://") {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return nil
+		}
+		path = u.Path
+	}
+	if strings.HasPrefix(path, "~") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil
+		}
+		path = home + strings.TrimPrefix(path, "~")
+	}
+	if !strings.HasPrefix(path, "/") {
+		return nil
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	return &service.Image{
+		MediaType: mediaTypeForImagePath(path),
+		Data:      base64.StdEncoding.EncodeToString(data),
+		URL:       raw,
+	}
+}
+
+func mediaTypeForImagePath(path string) string {
+	lower := strings.ToLower(path)
+	switch {
+	case strings.HasSuffix(lower, ".png"):
+		return "image/png"
+	case strings.HasSuffix(lower, ".gif"):
+		return "image/gif"
+	case strings.HasSuffix(lower, ".webp"):
+		return "image/webp"
+	case strings.HasSuffix(lower, ".bmp"):
+		return "image/bmp"
+	default:
+		return "image/jpeg"
+	}
 }
 
 func parseDataURL(url string) *service.Image {
@@ -1259,4 +1605,77 @@ func fetchImageAsBase64(url string) (*service.Image, error) {
 		MediaType: mediaType,
 		Data:      base64.StdEncoding.EncodeToString(data),
 	}, nil
+}
+
+func normalizeImage(img *service.Image) *service.Image {
+	if img == nil || strings.TrimSpace(img.Data) == "" {
+		return img
+	}
+	data, err := base64.StdEncoding.DecodeString(img.Data)
+	if err != nil || len(data) == 0 {
+		return img
+	}
+	const maxImageBytes = 2 * 1024 * 1024
+	const maxImageSide = 1568
+	if len(data) <= maxImageBytes {
+		if cfg, _, err := image.DecodeConfig(bytes.NewReader(data)); err == nil {
+			if cfg.Width <= maxImageSide && cfg.Height <= maxImageSide {
+				return img
+			}
+		}
+	}
+
+	decoded, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return img
+	}
+	bounds := decoded.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	if width <= 0 || height <= 0 {
+		return img
+	}
+	targetWidth, targetHeight := scaledDimensions(width, height, maxImageSide)
+	dst := resizeNearest(decoded, targetWidth, targetHeight)
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 85}); err != nil {
+		return img
+	}
+	img.MediaType = "image/jpeg"
+	img.Data = base64.StdEncoding.EncodeToString(buf.Bytes())
+	return img
+}
+
+func resizeNearest(src image.Image, width int, height int) *image.RGBA {
+	dst := image.NewRGBA(image.Rect(0, 0, width, height))
+	bounds := src.Bounds()
+	srcWidth := bounds.Dx()
+	srcHeight := bounds.Dy()
+	for y := 0; y < height; y++ {
+		sy := bounds.Min.Y + y*srcHeight/height
+		for x := 0; x < width; x++ {
+			sx := bounds.Min.X + x*srcWidth/width
+			dst.Set(x, y, src.At(sx, sy))
+		}
+	}
+	return dst
+}
+
+func scaledDimensions(width int, height int, maxSide int) (int, int) {
+	if width <= maxSide && height <= maxSide {
+		return width, height
+	}
+	if width >= height {
+		scaledHeight := height * maxSide / width
+		if scaledHeight < 1 {
+			scaledHeight = 1
+		}
+		return maxSide, scaledHeight
+	}
+	scaledWidth := width * maxSide / height
+	if scaledWidth < 1 {
+		scaledWidth = 1
+	}
+	return scaledWidth, maxSide
 }

@@ -88,7 +88,7 @@ onMounted(refresh)
       <div class="panel-header">
         <div>
           <h2>可用模型</h2>
-          <p>推荐 Claude Code / Cline 优先选择 Qwen3-Coder。</p>
+          <p>推荐 OpenClaw / Hermes / Claude Code / Cline 优先选择 MiniMax-M2.7。</p>
         </div>
         <input v-model="query" class="search-input" type="search" placeholder="搜索模型" style="max-width: 260px" />
       </div>

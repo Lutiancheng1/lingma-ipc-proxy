@@ -222,7 +222,7 @@ onUnmounted(() => {
         <span class="status-dot" :class="{ running: status.running }"></span>
         <div>
           <strong>{{ status.running ? 'Proxy Running' : 'Proxy Stopped' }}</strong>
-          <small>v1.2.2</small>
+          <small>v1.3.0</small>
         </div>
       </div>
     </aside>

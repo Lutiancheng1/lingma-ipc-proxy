@@ -90,6 +90,7 @@ func loadConfig() (service.Config, string) {
 		Transport:   lingmaipc.TransportAuto,
 		Cwd:         currentDir(),
 		Mode:        "agent",
+		Model:       "MiniMax-M2.7",
 		ShellType:   defaultShellType(),
 		SessionMode: service.SessionModeAuto,
 		Timeout:     120 * time.Second,

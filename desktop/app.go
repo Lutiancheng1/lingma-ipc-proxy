@@ -513,6 +513,7 @@ func defaultConfig() service.Config {
 		Transport:   lingmaipc.TransportAuto,
 		Cwd:         defaultCwd(),
 		Mode:        "agent",
+		Model:       "MiniMax-M2.7",
 		ShellType:   defaultShellType(),
 		SessionMode: service.SessionModeAuto,
 		Timeout:     120 * time.Second,
