@@ -1,6 +1,6 @@
-# Methodology: Simulating Tool Calls over a Plain Chat API
+# Methodology: Implementing Tool Calls over a Plain Chat API
 
-This document describes a practical pattern for supporting tool calling when the upstream model only exposes a plain chat API.
+This document describes a practical pattern for supporting tool calling when the model only exposes a plain chat API.
 
 The core idea is:
 
@@ -11,7 +11,7 @@ The core idea is:
 
 ## Core Pattern
 
-When the upstream model does not support native tool calls, do not rely on blindly forwarding `tools`.
+When the model does not support native tool calls, do not rely on blindly forwarding `tools`.
 
 Instead:
 
@@ -29,7 +29,7 @@ In this project the action DSL is a fenced block:
 
 ## What the Proxy Must Do
 
-The proxy is not a passive transport anymore. Once tool emulation is enabled, it should:
+The proxy is not a passive transport anymore. Once tool tool calling is enabled, it should:
 
 - inject tool definitions into the prompt
 - preserve tool history across turns
@@ -41,7 +41,7 @@ The proxy is not a passive transport anymore. Once tool emulation is enabled, it
 
 ## Multi-turn Tool Calling
 
-Single-turn emulation is not enough. A useful agent loop looks like this:
+Single-turn tool calling is not enough. A useful agent loop looks like this:
 
 1. model emits a tool call
 2. external executor runs the tool
@@ -52,9 +52,9 @@ To make this stable:
 
 - do not feed tool results back as raw text only
 - wrap them in a continuation message that clearly asks for the next action
-- keep emulation active even when later turns do not repeat the original `tools` field
+- keep tool calling active even when later turns do not repeat the original `tools` field
 
-That last point matters. Many clients send `tools` only on the first turn. The proxy should still keep the conversation in emulation mode when it sees tool history.
+That last point matters. Many clients send `tools` only on the first turn. The proxy should still keep the conversation in tool calling mode when it sees tool history.
 
 ## Few-shot Guidance
 
@@ -109,7 +109,7 @@ Anthropic side:
 ## Common Failure Modes
 
 - only supporting the first tool turn
-- losing emulation state on later turns
+- losing tool calling state on later turns
 - not projecting historical tool calls back into text
 - feeding back raw tool results without continuation instructions
 - missing refusal detection
@@ -127,5 +127,5 @@ The implementation here follows exactly this pattern:
 
 Implementation checklist:
 
-- [tool-emulation-checklist.md](./tool-emulation-checklist.md)
+- [tool-tool calling-checklist.md](./tool-tool calling-checklist.md)
 

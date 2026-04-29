@@ -2,10 +2,13 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -32,22 +35,45 @@ type Config struct {
 	Cwd             string
 	CurrentFilePath string
 	Mode            string
+	Model           string
 	ShellType       string
 	SessionMode     SessionMode
 	Timeout         time.Duration
 }
 
+type Image struct {
+	MediaType string // e.g. "image/jpeg", "image/png"
+	Data      string // base64 encoded data without prefix
+	URL       string // optional original URL
+}
+
 type ChatMessage struct {
-	Role string
-	Text string
+	Role   string
+	Text   string
+	Images []Image
 }
 
 type ChatRequest struct {
-	Model      string
-	System     string
-	Messages   []ChatMessage
-	Tools      []toolemulation.ToolDef
-	ToolChoice toolemulation.ToolChoice
+	Model             string
+	System            string
+	Messages          []ChatMessage
+	Tools             []toolemulation.ToolDef
+	ToolChoice        toolemulation.ToolChoice
+	ParallelToolCalls *bool
+
+	// Generation parameters (passed through for API compatibility;
+	// actual effect depends on Lingma backend support)
+	Temperature      *float64
+	TopP             *float64
+	TopK             int
+	Stop             []string
+	PresencePenalty  float64
+	FrequencyPenalty float64
+	MaxTokens        int
+	Seed             int
+	User             string
+	ReasoningEffort  string
+	ResponseFormat   string // "json" or "json_schema"
 }
 
 type ChatResult struct {
@@ -122,6 +148,7 @@ func New(cfg Config) *Service {
 	if strings.TrimSpace(cfg.Mode) == "" {
 		cfg.Mode = "agent"
 	}
+	cfg.Model = strings.TrimSpace(cfg.Model)
 	if strings.TrimSpace(cfg.ShellType) == "" {
 		cfg.ShellType = lingmaipc.DefaultShellType()
 	}
@@ -135,6 +162,18 @@ func New(cfg Config) *Service {
 		cfg.SessionMode = SessionModeAuto
 	}
 	return &Service{cfg: cfg}
+}
+
+func (s *Service) SetDefaultModel(model string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg.Model = strings.TrimSpace(model)
+}
+
+func (s *Service) DefaultModel() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return strings.TrimSpace(s.cfg.Model)
 }
 
 func (s *Service) Warmup(ctx context.Context) error {
@@ -251,6 +290,9 @@ func (s *Service) generateLocked(
 		_ = s.deleteSessionLocked(cleanupCtx, ipcClient, sessionID)
 	}()
 
+	if strings.TrimSpace(req.Model) == "" {
+		req.Model = s.DefaultModel()
+	}
 	internalModelID := s.resolveInternalModelID(req.Model)
 
 	requestID := lingmaipc.CreateRequestID("serve")
@@ -279,7 +321,9 @@ func (s *Service) generateLocked(
 		s.rememberStickyModel(sessionID, modelID)
 	}
 
-	runResult, err := s.runPromptLocked(requestCtx, ipcClient, sessionID, prompt, requestID, meta, onDelta)
+	images := extractLastUserImages(req.Messages)
+
+	runResult, err := s.runPromptLocked(requestCtx, ipcClient, sessionID, prompt, images, requestID, meta, onDelta)
 	if err != nil {
 		if effectiveMode == SessionModeReuse {
 			s.invalidateStickySession()
@@ -304,16 +348,25 @@ func (s *Service) generateLocked(
 	result = s.buildChatResult(req, sessionID, requestID, prompt, runResult, effectiveMode)
 
 	if len(req.Tools) > 0 {
-		calls, remaining, parseErr := toolemulation.ParseActionBlocks(result.Text, toolemulation.Config{})
+		calls, remaining, parseErr := toolemulation.ParseActionBlocks(result.Text, req.Tools, toolemulation.Config{})
 		if parseErr == nil && len(calls) > 0 {
 			result.Text = remaining
 			result.ToolCalls = calls
 		} else if (req.ToolChoice.Mode == "any" || req.ToolChoice.Mode == "tool") && len(calls) == 0 {
 			if !toolemulation.LooksLikeRefusal(result.Text) {
-				hintPrompt := prompt + "\n\nImportant: You must use one of the available tools to answer this request. Output a \"```json action\" block."
-				retryResult, retryErr := s.runPromptLocked(requestCtx, ipcClient, sessionID, hintPrompt, requestID, meta, onDelta)
+				hintPrompt := prompt + "\n\n" + toolemulation.ForceToolingPrompt(req.ToolChoice)
+				retryRequestID := lingmaipc.CreateRequestID("retry")
+				retryMeta := lingmaipc.CreateMeta(lingmaipc.MetaOptions{
+					RequestID:       retryRequestID,
+					Mode:            s.cfg.Mode,
+					Model:           internalModelID,
+					ShellType:       s.cfg.ShellType,
+					CurrentFilePath: s.cfg.CurrentFilePath,
+					EnabledMCP:      []any{},
+				})
+				retryResult, retryErr := s.runPromptLocked(requestCtx, ipcClient, sessionID, hintPrompt, nil, retryRequestID, retryMeta, onDelta)
 				if retryErr == nil && retryResult != nil {
-					retryCalls, retryRemaining, retryParseErr := toolemulation.ParseActionBlocks(retryResult.AssistantText, toolemulation.Config{})
+					retryCalls, retryRemaining, retryParseErr := toolemulation.ParseActionBlocks(retryResult.AssistantText, req.Tools, toolemulation.Config{})
 					if retryParseErr == nil && len(retryCalls) > 0 {
 						result.Text = retryRemaining
 						result.ToolCalls = retryCalls
@@ -500,6 +553,7 @@ func (s *Service) runPromptLocked(
 	client *lingmaipc.Client,
 	sessionID string,
 	text string,
+	images []Image,
 	requestID string,
 	meta map[string]any,
 	onDelta func(string),
@@ -507,13 +561,94 @@ func (s *Service) runPromptLocked(
 	notifications, cancel := client.Subscribe()
 	defer cancel()
 
-	if err := client.Send("session/prompt", map[string]any{
-		"sessionId": sessionID,
-		"prompt": []map[string]any{
-			{"type": "text", "text": text},
-		},
-		"_meta": meta,
-	}); err != nil {
+	promptItems := []map[string]any{
+		{"type": "text", "text": text},
+	}
+
+	// Build contextParams for images using Lingma's native format
+	var contextParams []map[string]any
+	for _, img := range images {
+		if img.Data == "" && img.URL == "" {
+			continue
+		}
+		mediaType := img.MediaType
+		if mediaType == "" {
+			mediaType = "image/jpeg"
+		}
+
+		// Determine file extension from mediaType
+		ext := "jpg"
+		switch mediaType {
+		case "image/png":
+			ext = "png"
+		case "image/gif":
+			ext = "gif"
+		case "image/webp":
+			ext = "webp"
+		case "image/bmp":
+			ext = "bmp"
+		}
+
+		// If we have base64 data, save to temp file and build lingma URI
+		var imageURI string
+		if img.Data != "" {
+			tmpFile, err := os.CreateTemp("", "lingma-img-*"+"."+ext)
+			if err == nil {
+				data, _ := base64.StdEncoding.DecodeString(img.Data)
+				if len(data) > 0 {
+					_ = os.WriteFile(tmpFile.Name(), data, 0644)
+					absPath, _ := filepath.Abs(tmpFile.Name())
+					imageURI = "lingma:///agent/file?path=" + url.QueryEscape(absPath)
+				}
+				tmpFile.Close()
+			}
+		}
+		if imageURI == "" && img.URL != "" {
+			imageURI = img.URL
+		}
+
+		// Add to promptItems using Lingma native image format
+		itemPrompt := map[string]any{
+			"type":     "image",
+			"mimeType": mediaType,
+		}
+		if imageURI != "" {
+			itemPrompt["uri"] = imageURI
+		}
+		if img.Data != "" {
+			itemPrompt["data"] = img.Data
+		}
+		promptItems = append(promptItems, itemPrompt)
+
+		// Add to contextParams using Lingma native format
+		item := map[string]any{
+			"type":     "image",
+			"mimeType": mediaType,
+		}
+		if imageURI != "" {
+			item["uri"] = imageURI
+		}
+		if img.Data != "" {
+			item["data"] = img.Data
+		}
+		contextParams = append(contextParams, item)
+	}
+
+	params := map[string]any{
+		"sessionId":     sessionID,
+		"prompt":        promptItems,
+		"contextParams": contextParams,
+		"_meta":         meta,
+	}
+	// Fallback: if images have URLs, also pass via extra field
+	for _, img := range images {
+		if img.URL != "" {
+			params["extra"] = map[string]any{"imageUrl": img.URL}
+			break
+		}
+	}
+
+	if err := client.Send("session/prompt", params); err != nil {
 		return nil, err
 	}
 
@@ -586,10 +721,20 @@ func resolveSessionMode(req ChatRequest, configured SessionMode) SessionMode {
 	if configured != SessionModeAuto {
 		return configured
 	}
-	if len(req.Tools) > 0 || strings.TrimSpace(req.System) != "" || len(filteredMessages(req.Messages)) > 1 {
+	hasTools := len(req.Tools) > 0 && req.ToolChoice.Mode != "none"
+	if hasTools || strings.TrimSpace(req.System) != "" || len(filteredMessages(req.Messages)) > 1 {
 		return SessionModeFresh
 	}
 	return SessionModeReuse
+}
+
+func extractLastUserImages(messages []ChatMessage) []Image {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return messages[i].Images
+		}
+	}
+	return nil
 }
 
 func buildLingmaPrompt(req ChatRequest, mode SessionMode) (string, error) {
@@ -609,8 +754,8 @@ func buildLingmaPrompt(req ChatRequest, mode SessionMode) (string, error) {
 	}
 
 	system := strings.TrimSpace(req.System)
-	if len(req.Tools) > 0 {
-		system = toolemulation.InjectTooling(system, req.Tools, req.ToolChoice)
+	if len(req.Tools) > 0 && req.ToolChoice.Mode != "none" {
+		system = toolemulation.InjectTooling(system, req.Tools, req.ToolChoice, req.ParallelToolCalls)
 	}
 
 	if system == "" && len(messages) == 1 {
@@ -618,16 +763,18 @@ func buildLingmaPrompt(req ChatRequest, mode SessionMode) (string, error) {
 	}
 
 	if len(req.Tools) > 0 {
-		parts := make([]string, 0, len(messages)+2)
-		if system != "" {
-			parts = append(parts, system)
-		}
+		parts := make([]string, 0, len(messages)+3)
 		for _, message := range messages {
 			role := "User"
 			if message.Role == "assistant" {
 				role = "Assistant"
 			}
 			parts = append(parts, fmt.Sprintf("%s: %s", role, message.Text))
+		}
+		if system != "" {
+			// Append tool prompt right before the final "Assistant:" so it
+			// is the last thing the model sees before generating a reply.
+			parts = append(parts, system)
 		}
 		parts = append(parts, "Assistant:")
 		return strings.Join(parts, "\n\n"), nil

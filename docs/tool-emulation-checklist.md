@@ -1,8 +1,8 @@
-# Tool Emulation Checklist
+# Tool Calling Implementation Checklist
 
-This checklist is for implementation work.
+This checklist covers the complete implementation of OpenAI / Anthropic compatible tool calling over a plain chat API.
 
-It is not meant to explain the theory again. It breaks plain-chat tool emulation into concrete surfaces that can be implemented and validated incrementally.
+It breaks the work into concrete surfaces that can be implemented and validated incrementally.
 
 ## 1. Prompt Contract
 
@@ -36,12 +36,12 @@ Acceptance:
 
 Acceptance:
 
-- emulation stays active on later turns without repeated tool definitions
+- tool calling stays active on later turns without repeated tool definitions
 
 ## 3. Tool History Projection
 
 - project historical assistant tool calls back into action text
-- do not pass downstream protocol-specific history directly to the upstream model
+- do not pass downstream protocol-specific history directly to Lingma
 - preserve tool name, arguments, and call id where useful
 
 Acceptance:
@@ -109,7 +109,7 @@ Acceptance:
 
 Acceptance:
 
-- downstream clients remain unaware that the upstream lacks native tools
+- downstream clients remain unaware that Lingma does not expose native tools
 
 ## 9. Streaming Strategy
 
@@ -148,7 +148,7 @@ Acceptance:
 ## 11. Observability
 
 - log:
-  - whether emulation is active
+  - whether tool calling is active
   - how many tool calls were parsed
   - whether retry fired
   - which refusal signal matched
@@ -168,11 +168,14 @@ Acceptance:
   - later turn without repeated `tools`
   - forced tool
   - `tool_choice=any`
+  - `tool_choice=none`
+  - `parallel_tool_calls=false`
 - Anthropic:
   - single-turn `tool_use`
   - multi-turn `tool_result` continuation
   - later turn without repeated `tools`
   - streaming `tool_use`
+  - `tool_choice=any` / `tool_choice=none`
 - error cases:
   - refusal
   - invalid JSON

@@ -1,5 +1,12 @@
 bin/
 dist/
+lingma-ipc-proxy
+desktop/build/bin/
+desktop/frontend/dist/
+desktop/frontend/node_modules/
+desktop/frontend/*.png
+*.app
+*.zip
 *.exe
 *.dll
 *.so
@@ -11,3 +18,6 @@ coverage.*
 .vscode/
 nul
 LINUXDO_POST.md
+
+# Local iteration doc (not for git)
+ITERATION.md

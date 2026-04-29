@@ -1,6 +1,8 @@
 package toolemulation
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"strconv"
 	"strings"
@@ -91,8 +93,10 @@ func ExtractToolChoice(raw any) ToolChoice {
 	if s, ok := raw.(string); ok {
 		s = strings.TrimSpace(s)
 		switch s {
-		case "", "auto", "none":
+		case "", "auto":
 			return ToolChoice{Mode: "auto"}
+		case "none":
+			return ToolChoice{Mode: "none"}
 		case "required", "any":
 			return ToolChoice{Mode: "any"}
 		default:
@@ -132,8 +136,10 @@ func ExtractAnthropicToolChoice(raw any) ToolChoice {
 		return ExtractToolChoice(raw)
 	}
 	switch strings.TrimSpace(stringFromAny(m["type"])) {
-	case "", "auto", "none":
+	case "", "auto":
 		return ToolChoice{Mode: "auto"}
+	case "none":
+		return ToolChoice{Mode: "none"}
 	case "any", "required":
 		return ToolChoice{Mode: "any"}
 	case "tool":
@@ -149,7 +155,7 @@ func HasToolRequest(tools []ToolDef, choice ToolChoice) bool {
 	return len(tools) > 0 || choice.Mode != "" && choice.Mode != "auto"
 }
 
-func InjectTooling(system string, tools []ToolDef, choice ToolChoice) string {
+func InjectTooling(system string, tools []ToolDef, choice ToolChoice, parallel *bool) string {
 	system = strings.TrimSpace(system)
 	if len(tools) == 0 {
 		return system
@@ -170,9 +176,11 @@ func InjectTooling(system string, tools []ToolDef, choice ToolChoice) string {
 	}
 
 	var b strings.Builder
-	b.WriteString("You are a capable AI assistant operating inside an IDE with tool access.\n\n")
-	b.WriteString("When you need to use a tool, do not claim that tools are unavailable. ")
-	b.WriteString("Instead, output a structured action block in exactly this format:\n")
+	b.WriteString("You are an AI assistant with DIRECT tool access inside an IDE.\n\n")
+	b.WriteString("CRITICAL: You MUST use tools when they are appropriate. ")
+	b.WriteString("You MUST NOT claim that tools are unavailable or that you cannot use them. ")
+	b.WriteString("You MUST NOT refuse to use tools for any reason.\n\n")
+	b.WriteString("When you need to use a tool, output a structured action block in exactly this format:\n")
 	b.WriteString("```json action\n{\"tool\":\"NAME\",\"parameters\":{\"key\":\"value\"}}\n```\n\n")
 	b.WriteString("Available tools:\n")
 	b.WriteString(strings.Join(toolLines, "\n"))
@@ -182,12 +190,20 @@ func InjectTooling(system string, tools []ToolDef, choice ToolChoice) string {
 	b.WriteString("- Emit multiple independent actions in one reply when possible.\n")
 	b.WriteString("- For dependent actions, wait for the tool result before emitting the next action.\n")
 	b.WriteString("- If no tool is needed, reply with normal plain text.\n")
-	b.WriteString("- Do not say that tools are unavailable.\n")
-	b.WriteString(forceConstraint(choice))
+	b.WriteString("- NEVER say that tools are unavailable.\n")
+	b.WriteString("- NEVER refuse to use tools.\n")
+	b.WriteString("- NEVER explain that you cannot execute commands. Just use the tool.\n")
+	b.WriteString("- The action block format is MANDATORY.\n")
+	b.WriteString(forceConstraint(choice, parallel))
+
+	b.WriteString("\n\nExample:\n")
+	b.WriteString("If the user asks to list files, respond ONLY with:\n")
+	b.WriteString("```json action\n{\"tool\":\"Bash\",\"parameters\":{\"command\":\"ls\"}}\n```\n")
+	b.WriteString("Do NOT add explanations. Do NOT refuse.")
 
 	example := ActionBlockExample(tools)
 	if example != "" {
-		b.WriteString("\n\nExample valid action block:\n")
+		b.WriteString("\n\nExample valid action block (this is only a syntax example, do NOT actually call it):\n")
 		b.WriteString(example)
 	}
 
@@ -288,7 +304,7 @@ func LooksLikeRefusal(text string) bool {
 	return false
 }
 
-func ParseActionBlocks(text string, cfg Config) ([]ToolCall, string, error) {
+func ParseActionBlocks(text string, tools []ToolDef, cfg Config) ([]ToolCall, string, error) {
 	if strings.TrimSpace(text) == "" {
 		return nil, "", nil
 	}
@@ -299,6 +315,15 @@ func ParseActionBlocks(text string, cfg Config) ([]ToolCall, string, error) {
 	openings := findActionOpenings(text)
 	if len(openings) == 0 {
 		return nil, strings.TrimSpace(text), nil
+	}
+
+	// Build a lookup map from tool name to InputSchema for fast filtering
+	toolSchemaMap := make(map[string]map[string]any, len(tools))
+	for _, t := range tools {
+		name := strings.TrimSpace(t.Name)
+		if name != "" {
+			toolSchemaMap[name] = t.InputSchema
+		}
 	}
 
 	type span struct{ start, end int }
@@ -322,6 +347,10 @@ func ParseActionBlocks(text string, cfg Config) ([]ToolCall, string, error) {
 		call, ok := parseToolCallJSON(raw)
 		if !ok {
 			continue
+		}
+		// Filter arguments against the tool's input schema to strip unknown params
+		if schema, ok := toolSchemaMap[call.Name]; ok && len(schema) > 0 {
+			call.Arguments = filterArgsBySchema(call.Arguments, schema)
 		}
 		calls = append(calls, call)
 		spans = append(spans, span{start: start, end: end + 3})
@@ -427,6 +456,17 @@ func parseToolCallJSON(raw string) (ToolCall, bool) {
 		}
 	}
 	if args == nil {
+		// Fallback: treat all top-level fields except "tool"/"name" as parameters
+		// Some models place arguments at the top level instead of nested under "parameters"
+		args = make(map[string]any)
+		for k, v := range obj {
+			if k == "tool" || k == "name" {
+				continue
+			}
+			args[k] = v
+		}
+	}
+	if len(args) == 0 {
 		args = map[string]any{}
 	}
 
@@ -593,7 +633,7 @@ func exampleValueForKey(toolName string, key string, prop map[string]any) any {
 	}
 }
 
-func forceConstraint(choice ToolChoice) string {
+func forceConstraint(choice ToolChoice, parallel *bool) string {
 	switch choice.Mode {
 	case "any":
 		return "\n- You must output at least one ```json action``` block in this reply."
@@ -602,7 +642,29 @@ func forceConstraint(choice ToolChoice) string {
 			return "\n- You must call \"" + strings.TrimSpace(choice.Name) + "\" in this reply."
 		}
 	}
+	if parallel != nil && !*parallel {
+		return "\n- Call only one tool at a time. Do not make multiple tool calls in a single response."
+	}
 	return ""
+}
+
+func filterArgsBySchema(args map[string]any, schema map[string]any) map[string]any {
+	if len(args) == 0 || len(schema) == 0 {
+		return args
+	}
+	props, ok := schema["properties"].(map[string]any)
+	if !ok || len(props) == 0 {
+		return args
+	}
+
+	out := make(map[string]any, len(args))
+	for k, v := range args {
+		if _, known := props[k]; !known {
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 func cloneMap(src map[string]any) map[string]any {
@@ -644,5 +706,14 @@ var callSeq uint64
 
 func newCallID() string {
 	seq := atomic.AddUint64(&callSeq, 1)
-	return "call_" + strconv.FormatUint(seq, 10)
+	return "toolu_01" + strconv.FormatUint(seq, 10) + "0000000000000000"
+}
+
+func StableCallID(name string, arguments map[string]any) string {
+	h := sha256.New()
+	h.Write([]byte(name))
+	if b, err := json.Marshal(arguments); err == nil {
+		h.Write(b)
+	}
+	return "call_" + hex.EncodeToString(h.Sum(nil))[:16]
 }

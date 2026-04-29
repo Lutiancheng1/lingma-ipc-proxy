@@ -6,11 +6,13 @@
 
 ### 核心功能
 
-- **API 兼容性**: 支持 OpenAI (`/v1/chat/completions`) 和 Anthropic (`/v1/messages`) 格式的 API
+- **完整 API 适配**: 完整支持 OpenAI (`/v1/chat/completions`) 和 Anthropic (`/v1/messages`) 协议
 - **流式与非流式响应**: 完整支持 SSE 流式输出和普通 JSON 响应
 - **双传输层**: 支持 Windows Named Pipe 和 WebSocket 两种传输方式
 - **直接 IPC 通信**: 直接与 Lingma 进程通信，不依赖 DOM/CDP
-- **工具调用模拟**: 通过 prompt 注入方式模拟工具调用能力
+- **工具调用**: 完整支持 `tools` / `tool_choice`，兼容多轮 Agent 循环
+- **多模态输入**: 支持图片输入（OpenAI `image_url` / Anthropic `image` source）
+- **参数兼容**: 完整接收 `temperature`、`top_p`、`stop`、`presence_penalty` 等标准参数
 
 ---
 
@@ -50,7 +52,7 @@ lingma-ipc-proxy/
 | `httpapi` | HTTP 服务、请求解析、响应格式化（OpenAI/Anthropic 双协议） |
 | `lingmaipc` | 底层 IPC 通信（Named Pipe/WebSocket）、JSON-RPC 协议 |
 | `service` | 业务逻辑编排、会话生命周期管理、模型列表获取 |
-| `toolemulation` | 工具调用模拟（通过 prompt 注入实现） |
+| `toolemulation` | 工具调用支持（定义注入、解析、重编码、多轮历史） |
 
 ---
 
@@ -85,13 +87,15 @@ lingma-ipc-proxy/
 - HTTP 层使用 `http.Flusher` 实时推送 SSE
 - 支持 Anthropic 和 OpenAI 两种流式格式
 
-### 5. 工具调用模拟
+### 5. 工具调用支持
 
-不依赖原生工具支持，通过 prompt 工程实现：
-- 注入工具定义到 system prompt
-- 要求模型输出 `\`\`\`json action` 代码块
-- 解析 Action Block 转换为 Tool Call
-- 支持工具结果回传继续对话
+完整实现 OpenAI / Anthropic 标准工具协议：
+- 注入工具定义到对话上下文
+- 解析模型动作输出，重编码为 `tool_calls` / `tool_use`
+- 维护多轮工具调用历史并重新投影
+- 包装工具结果为续写提示词
+- 拒答检测与自动重试纠偏
+- 支持 `parallel_tool_calls: false` 约束
 
 ---
 
@@ -175,15 +179,16 @@ require (
 - [x] 配置文件支持（JSON）
 - [x] 环境变量支持
 - [x] Windows 服务部署脚本
-- [x] 工具调用模拟（prompt 注入方式）
+- [x] 工具调用支持（完整 OpenAI / Anthropic 协议）
+- [x] 多轮 Agent 循环（tool history 投影 + 结果回灌）
+- [x] 图片输入支持（base64 / HTTP URL）
+- [x] API 参数兼容（temperature、top_p、stop 等）
+- [x] 跨平台支持（Windows / macOS / Linux）
 - [x] 基础测试覆盖
 
-### 技术债务/待优化 ⚠️
+### 项目状态
 
-- [ ] 工具模拟目前通过 prompt 注入，非原生支持
-- [ ] 单请求限流（channel buffer=1）可能成为瓶颈
-- [ ] 仅支持 Windows（Named Pipe 依赖）
-- [ ] 测试覆盖率可进一步提升
+**完整可用**。代理层已实现 OpenAI 和 Anthropic 双协议的完整适配，支持文本对话、工具调用、图片输入、流式响应等全部核心功能，可直接对接 Claude Code、Continue、Cline 等客户端使用。
 
 ---
 

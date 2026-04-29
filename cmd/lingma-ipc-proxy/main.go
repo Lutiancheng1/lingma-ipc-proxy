@@ -30,6 +30,7 @@ type fileConfig struct {
 	Cwd             string `json:"cwd"`
 	CurrentFilePath string `json:"current_file_path"`
 	Mode            string `json:"mode"`
+	Model           string `json:"model"`
 	ShellType       string `json:"shell_type"`
 	SessionMode     string `json:"session_mode"`
 	TimeoutSeconds  int    `json:"timeout"`
@@ -113,6 +114,7 @@ func loadConfig() (service.Config, string) {
 	cwd := flag.String("cwd", cfg.Cwd, "Working directory used when creating Lingma sessions")
 	currentFilePath := flag.String("current-file-path", cfg.CurrentFilePath, "Current file path sent through ACP meta")
 	mode := flag.String("mode", cfg.Mode, "Lingma ACP mode value")
+	model := flag.String("model", cfg.Model, "Default Lingma model when API request omits model")
 	shellType := flag.String("shell-type", cfg.ShellType, "Shell type sent through ACP meta")
 	timeoutSeconds := flag.Int("timeout", int(cfg.Timeout/time.Second), "Per-request timeout in seconds")
 	sessionMode := flag.String("session-mode", string(cfg.SessionMode), "Session mode: auto, fresh, reuse")
@@ -131,6 +133,7 @@ func loadConfig() (service.Config, string) {
 	cfg.Cwd = strings.TrimSpace(*cwd)
 	cfg.CurrentFilePath = strings.TrimSpace(*currentFilePath)
 	cfg.Mode = strings.TrimSpace(*mode)
+	cfg.Model = strings.TrimSpace(*model)
 	cfg.ShellType = strings.TrimSpace(*shellType)
 	cfg.SessionMode = parsedSessionMode
 	cfg.Timeout = time.Duration(*timeoutSeconds) * time.Second
@@ -195,6 +198,9 @@ func overlayFileConfig(dst *service.Config, src fileConfig) {
 	if strings.TrimSpace(src.Mode) != "" {
 		dst.Mode = strings.TrimSpace(src.Mode)
 	}
+	if strings.TrimSpace(src.Model) != "" {
+		dst.Model = strings.TrimSpace(src.Model)
+	}
 	if strings.TrimSpace(src.ShellType) != "" {
 		dst.ShellType = strings.TrimSpace(src.ShellType)
 	}
@@ -230,6 +236,9 @@ func overlayEnvConfig(dst *service.Config) {
 	}
 	if value := strings.TrimSpace(os.Getenv("LINGMA_PROXY_MODE")); value != "" {
 		dst.Mode = value
+	}
+	if value := strings.TrimSpace(os.Getenv("LINGMA_PROXY_MODEL")); value != "" {
+		dst.Model = value
 	}
 	if value := strings.TrimSpace(os.Getenv("LINGMA_PROXY_SHELL_TYPE")); value != "" {
 		dst.ShellType = value

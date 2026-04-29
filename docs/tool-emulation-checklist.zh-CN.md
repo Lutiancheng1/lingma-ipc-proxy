@@ -1,8 +1,8 @@
-# Tool Emulation 实现清单
+# Tool Calling 实现清单
 
-这份清单是给后续迭代用的。
+这份清单覆盖 OpenAI / Anthropic 标准工具调用的完整实现。
 
-目标不是解释原理，而是把“纯聊天 API 模拟 tools 调用”拆成可逐项完成、可逐项验证的实现面。
+目标是把"纯聊天 API 支持 tools 调用"拆成可逐项完成、可逐项验证的实现面。
 
 ## 1. Prompt Contract
 
@@ -49,7 +49,7 @@
 
 验收标准：
 
-- 第二轮即使不重复传 `tools`，也能继续走 emulation
+- 第二轮即使不重复传 `tools`，也能继续走 tool calling
 
 ## 3. Tool History Projection
 
@@ -191,7 +191,7 @@
 ## 11. Observability
 
 - 打日志：
-  - 是否进入 emulation
+  - 是否进入 tool calling
   - 解析到几个 tool calls
   - 是否触发 retry
   - refusal 命中原因

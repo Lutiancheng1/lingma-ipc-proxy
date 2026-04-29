@@ -7,16 +7,19 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag, for example v0.1.0"
+        description: "Release tag, for example v1.2.0"
         required: true
 
 permissions:
   contents: write
 
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+
 jobs:
   test:
     name: Test
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,53 +32,173 @@ jobs:
       - name: Run tests
         run: go test ./...
 
-  build-release:
-    name: Build And Publish Release
-    runs-on: windows-latest
+  build-cli-macos:
+    name: Build CLI macOS
+    runs-on: macos-latest
     needs: test
-    env:
-      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
-      EXE_NAME: lingma-ipc-proxy_${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}_windows_amd64.exe
-      ARCHIVE_NAME: lingma-ipc-proxy_${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}_windows_amd64.zip
-      CHECKSUM_NAME: lingma-ipc-proxy_${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}_sha256.txt
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
 
-      - name: Build binary
-        shell: pwsh
-        run: .\scripts\build.ps1 -Clean
+      - name: Build CLI
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o dist/lingma-ipc-proxy ./cmd/lingma-ipc-proxy
+          tar -C dist -czf "lingma-ipc-proxy_${RELEASE_TAG}_darwin_arm64.tar.gz" lingma-ipc-proxy
 
-      - name: Prepare release assets
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-macos
+          path: lingma-ipc-proxy_${{ env.RELEASE_TAG }}_darwin_arm64.tar.gz
+
+  build-cli-windows:
+    name: Build CLI Windows
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build CLI
         shell: pwsh
         run: |
-          Copy-Item .\dist\lingma-ipc-proxy.exe .\$env:EXE_NAME -Force
+          .\scripts\build.ps1 -Clean
+          $asset = "lingma-ipc-proxy_${env:RELEASE_TAG}_windows_amd64.zip"
+          Compress-Archive -Path .\dist\lingma-ipc-proxy.exe -DestinationPath $asset -Force
 
-          $exePath = Join-Path $PWD $env:EXE_NAME
-          $archivePath = Join-Path $PWD $env:ARCHIVE_NAME
-          $checksumPath = Join-Path $PWD $env:CHECKSUM_NAME
-          Compress-Archive -Path $exePath -DestinationPath $archivePath -Force
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-windows
+          path: lingma-ipc-proxy_${{ env.RELEASE_TAG }}_windows_amd64.zip
 
-          $exeHash = (Get-FileHash -Algorithm SHA256 $exePath).Hash.ToLowerInvariant()
-          $zipHash = (Get-FileHash -Algorithm SHA256 $archivePath).Hash.ToLowerInvariant()
-          @(
-            "$exeHash  $($env:EXE_NAME)"
-            "$zipHash  $($env:ARCHIVE_NAME)"
-          ) | Set-Content $checksumPath
+  build-desktop-macos:
+    name: Build Desktop macOS
+    runs-on: macos-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix desktop/frontend
+
+      - name: Build app
+        run: |
+          cd desktop
+          wails build -platform darwin/arm64 -clean
+
+      - name: Package app
+        run: |
+          APP_PATH="$(find desktop/build/bin -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          test "$(basename "$APP_PATH")" = "Lingma IPC Proxy.app"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "lingma-ipc-proxy-desktop_${RELEASE_TAG}_darwin_arm64.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos
+          path: lingma-ipc-proxy-desktop_${{ env.RELEASE_TAG }}_darwin_arm64.zip
+
+  build-desktop-windows:
+    name: Build Desktop Windows
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+
+      - name: Install Wails
+        shell: pwsh
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix desktop/frontend
+
+      - name: Build app
+        shell: pwsh
+        run: |
+          Push-Location desktop
+          wails build -platform windows/amd64 -clean
+          Pop-Location
+
+      - name: Package app
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem .\desktop\build\bin -Filter *.exe | Select-Object -First 1
+          if (-not $exe) { throw "Desktop exe was not produced" }
+          if ($exe.Name -ne "LingmaProxy.exe") { throw "Unexpected desktop exe name: $($exe.Name)" }
+          $asset = "lingma-ipc-proxy-desktop_${env:RELEASE_TAG}_windows_amd64.zip"
+          Compress-Archive -Path $exe.FullName -DestinationPath $asset -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows
+          path: lingma-ipc-proxy-desktop_${{ env.RELEASE_TAG }}_windows_amd64.zip
+
+  publish:
+    name: Publish Release
+    runs-on: ubuntu-latest
+    needs:
+      - build-cli-macos
+      - build-cli-windows
+      - build-desktop-macos
+      - build-desktop-windows
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum * > "lingma-ipc-proxy_${RELEASE_TAG}_sha256.txt"
 
       - name: Create or update release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           generate_release_notes: true
-          files: |
-            ${{ env.EXE_NAME }}
-            ${{ env.ARCHIVE_NAME }}
-            ${{ env.CHECKSUM_NAME }}
+          files: artifacts/*
