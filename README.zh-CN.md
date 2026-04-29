@@ -11,7 +11,7 @@
 
 ## 当前版本
 
-当前桌面端版本线：`v1.2.1`
+当前桌面端版本线：`v1.2.2`
 
 GitHub Actions 会在 Release 中产出：
 
@@ -415,8 +415,8 @@ Lingma IPC Proxy
 发布方式：
 
 ```bash
-git tag v1.2.1
-git push origin v1.2.1
+git tag v1.2.2
+git push origin v1.2.2
 ```
 
 也可以在 GitHub Actions 页面手动运行 `Release` workflow，并输入 tag。

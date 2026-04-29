@@ -8,7 +8,7 @@ The project is designed for tools such as Claude Code, Cline, Continue, OpenCode
 
 ## Current Version
 
-The current desktop line is `v1.2.1`.
+The current desktop line is `v1.2.2`.
 
 Release builds are produced by GitHub Actions for:
 
@@ -306,7 +306,7 @@ The desktop bundle name is always `Lingma IPC Proxy`.
 
 The release workflow is triggered by:
 
-- pushing a tag such as `v1.2.1`
+- pushing a tag such as `v1.2.2`
 - manually running the `Release` workflow with a tag input
 
 Planned improvements:
