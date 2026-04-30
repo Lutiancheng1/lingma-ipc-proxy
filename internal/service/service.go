@@ -229,7 +229,7 @@ func (s *Service) ListModels(ctx context.Context) ([]Model, error) {
 }
 
 func (s *Service) Generate(ctx context.Context, req ChatRequest) (*ChatResult, error) {
-	return s.generateLocked(ctx, req, nil)
+	return s.generateWithReconnect(ctx, req, nil)
 }
 
 func (s *Service) GenerateStream(ctx context.Context, req ChatRequest) (<-chan StreamEvent, <-chan StreamResult, error) {
@@ -237,7 +237,7 @@ func (s *Service) GenerateStream(ctx context.Context, req ChatRequest) (<-chan S
 	done := make(chan StreamResult, 1)
 
 	go func() {
-		result, err := s.generateLocked(ctx, req, func(delta string) {
+		result, err := s.generateWithReconnect(ctx, req, func(delta string) {
 			if delta == "" {
 				return
 			}
@@ -253,6 +253,20 @@ func (s *Service) GenerateStream(ctx context.Context, req ChatRequest) (<-chan S
 	}()
 
 	return events, done, nil
+}
+
+func (s *Service) generateWithReconnect(
+	ctx context.Context,
+	req ChatRequest,
+	onDelta func(string),
+) (*ChatResult, error) {
+	result, err := s.generateLocked(ctx, req, onDelta)
+	if err == nil || !isRecoverableIPCError(err) {
+		return result, err
+	}
+
+	s.resetConnection()
+	return s.generateLocked(ctx, req, onDelta)
 }
 
 func (s *Service) generateLocked(
@@ -388,6 +402,29 @@ func shouldRetryTooling(choice toolemulation.ToolChoice, text string) bool {
 	return toolemulation.LooksLikeRefusal(text) || toolemulation.LooksLikeMissedToolUse(text)
 }
 
+func isRecoverableIPCError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	needles := []string{
+		"use of closed network connection",
+		"broken pipe",
+		"connection reset by peer",
+		"connection refused",
+		"websocket: close",
+		"unexpected eof",
+		"io: read/write on closed pipe",
+		"lingma ipc notification stream closed",
+	}
+	for _, needle := range needles {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) buildChatResult(
 	req ChatRequest,
 	sessionID string,
@@ -465,6 +502,12 @@ func (s *Service) closeClientLocked() error {
 	s.transport = ""
 	s.clearStickyLocked()
 	return client.Close()
+}
+
+func (s *Service) resetConnection() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_ = s.closeClientLocked()
 }
 
 func (s *Service) resolveSession(ctx context.Context, client *lingmaipc.Client, mode SessionMode) (string, error) {
