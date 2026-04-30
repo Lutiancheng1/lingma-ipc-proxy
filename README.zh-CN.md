@@ -11,7 +11,7 @@
 
 ## 当前版本
 
-当前桌面端版本线：`v1.3.0`
+当前桌面端版本线：`v1.3.2`
 
 GitHub Actions 会在 Release 中产出：
 
@@ -19,9 +19,22 @@ GitHub Actions 会在 Release 中产出：
 | --- | --- | --- |
 | `lingma-ipc-proxy_<tag>_darwin_arm64.tar.gz` | macOS | CLI 代理 |
 | `lingma-ipc-proxy_<tag>_windows_amd64.zip` | Windows | CLI 代理 |
-| `lingma-ipc-proxy-desktop_<tag>_darwin_arm64.zip` | macOS | 桌面 App |
+| `lingma-ipc-proxy-desktop_<tag>_darwin_arm64.dmg` | Apple Silicon Mac | 拖拽安装桌面 App |
+| `lingma-ipc-proxy-desktop_<tag>_darwin_arm64.zip` | Apple Silicon Mac | `.app` 压缩包 |
 | `lingma-ipc-proxy-desktop_<tag>_windows_amd64.zip` | Windows | 桌面 App |
 | `lingma-ipc-proxy_<tag>_sha256.txt` | 全平台 | 校验文件 |
+
+### 应该下载哪个包？
+
+| 你的系统 | 推荐下载 | 说明 |
+| --- | --- | --- |
+| Apple Silicon Mac（M1/M2/M3/M4） | `lingma-ipc-proxy-desktop_<tag>_darwin_arm64.dmg` | 打开 DMG 后把 `Lingma IPC Proxy.app` 拖到 `Applications`。 |
+| Apple Silicon Mac，想要压缩包 | `lingma-ipc-proxy-desktop_<tag>_darwin_arm64.zip` | 和 DMG 是同一个 App，只是 zip 形式。 |
+| Windows x64 / x86_64 / AMD64 | `lingma-ipc-proxy-desktop_<tag>_windows_amd64.zip` | 普通 64 位 Windows 电脑都选这个，包括 Intel 和 AMD CPU。 |
+| 只想在 macOS 终端跑 CLI | `lingma-ipc-proxy_<tag>_darwin_arm64.tar.gz` | 只有命令行代理，没有桌面界面。 |
+| 只想在 Windows 终端跑 CLI | `lingma-ipc-proxy_<tag>_windows_amd64.zip` | 只有命令行代理，没有桌面界面。 |
+
+目前没有单独的 `windows_arm64` 包。常见 x64 Windows 机器请选择 `windows_amd64`。
 
 ## 功能概览
 
@@ -442,8 +455,8 @@ Lingma IPC Proxy
 发布方式：
 
 ```bash
-git tag v1.3.0
-git push origin v1.3.0
+git tag v1.3.2
+git push origin v1.3.2
 ```
 
 也可以在 GitHub Actions 页面手动运行 `Release` workflow，并输入 tag。

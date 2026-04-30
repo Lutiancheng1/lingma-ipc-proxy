@@ -8,7 +8,7 @@ The project is designed for tools such as Claude Code, Cline, Continue, OpenCode
 
 ## Current Version
 
-The current desktop line is `v1.3.0`.
+The current desktop line is `v1.3.2`.
 
 Release builds are produced by GitHub Actions for:
 
@@ -16,9 +16,22 @@ Release builds are produced by GitHub Actions for:
 | --- | --- | --- |
 | `lingma-ipc-proxy_<tag>_darwin_arm64.tar.gz` | macOS | CLI proxy |
 | `lingma-ipc-proxy_<tag>_windows_amd64.zip` | Windows | CLI proxy |
-| `lingma-ipc-proxy-desktop_<tag>_darwin_arm64.zip` | macOS | Desktop app |
+| `lingma-ipc-proxy-desktop_<tag>_darwin_arm64.dmg` | macOS Apple Silicon | Drag-to-install desktop app |
+| `lingma-ipc-proxy-desktop_<tag>_darwin_arm64.zip` | macOS Apple Silicon | Raw `.app` archive |
 | `lingma-ipc-proxy-desktop_<tag>_windows_amd64.zip` | Windows | Desktop app |
 | `lingma-ipc-proxy_<tag>_sha256.txt` | all | Checksums |
+
+### Which Package Should I Download?
+
+| Your system | Recommended asset | Notes |
+| --- | --- | --- |
+| macOS on Apple Silicon (M1/M2/M3/M4) | `lingma-ipc-proxy-desktop_<tag>_darwin_arm64.dmg` | Open the DMG and drag `Lingma IPC Proxy.app` to `Applications`. |
+| macOS on Apple Silicon, portable archive | `lingma-ipc-proxy-desktop_<tag>_darwin_arm64.zip` | Same app, but packaged as a zip instead of a drag-to-install DMG. |
+| Windows x64 / x86_64 / AMD64 | `lingma-ipc-proxy-desktop_<tag>_windows_amd64.zip` | This is the correct package for normal 64-bit Windows PCs, including Intel and AMD CPUs. |
+| macOS CLI only | `lingma-ipc-proxy_<tag>_darwin_arm64.tar.gz` | Terminal-only proxy binary. |
+| Windows CLI only | `lingma-ipc-proxy_<tag>_windows_amd64.zip` | Terminal-only proxy binary for 64-bit Windows. |
+
+There is currently no separate `windows_arm64` package. On a normal x64 Windows machine, choose `windows_amd64`.
 
 ## Desktop App
 
@@ -331,7 +344,7 @@ The desktop bundle name is always `Lingma IPC Proxy`.
 
 The release workflow is triggered by:
 
-- pushing a tag such as `v1.3.0`
+- pushing a tag such as `v1.3.2`
 - manually running the `Release` workflow with a tag input
 
 Planned improvements:

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag, for example v1.3.0"
+        description: "Release tag, for example v1.3.2"
         required: true
 
 permissions:
@@ -132,12 +132,24 @@ jobs:
           test -n "$APP_PATH"
           test "$(basename "$APP_PATH")" = "Lingma IPC Proxy.app"
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "lingma-ipc-proxy-desktop_${RELEASE_TAG}_darwin_arm64.zip"
+          DMG_ROOT="$(mktemp -d)"
+          cp -R "$APP_PATH" "$DMG_ROOT/"
+          ln -s /Applications "$DMG_ROOT/Applications"
+          hdiutil create \
+            -volname "Lingma IPC Proxy" \
+            -srcfolder "$DMG_ROOT" \
+            -ov \
+            -format UDZO \
+            "lingma-ipc-proxy-desktop_${RELEASE_TAG}_darwin_arm64.dmg"
+          rm -rf "$DMG_ROOT"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: desktop-macos
-          path: lingma-ipc-proxy-desktop_${{ env.RELEASE_TAG }}_darwin_arm64.zip
+          path: |
+            lingma-ipc-proxy-desktop_${{ env.RELEASE_TAG }}_darwin_arm64.zip
+            lingma-ipc-proxy-desktop_${{ env.RELEASE_TAG }}_darwin_arm64.dmg
 
   build-desktop-windows:
     name: Build Desktop Windows
