@@ -9,14 +9,53 @@ func TestLooksLikeMissedToolUseDetectsLocalToolAvoidance(t *testing.T) {
 	cases := []string{
 		"我需要使用终端工具来查看内存。",
 		"由于当前环境限制，请手动运行 top。",
+		"当前环境限制，我无法直接执行系统命令查看你的内存占用。",
+		"你可以在终端中运行 top -l 1 | grep PhysMem。",
 		"I need to read the file first.",
 		"Let me use the web search tool.",
+		"You can run the following command in your terminal.",
 		"现在我需要切换到计划模式。",
 	}
 	for _, tc := range cases {
 		if !LooksLikeMissedToolUse(tc) {
 			t.Fatalf("LooksLikeMissedToolUse(%q) = false", tc)
 		}
+	}
+}
+
+func TestLooksLikeRefusalDetectsLocalAccessRefusals(t *testing.T) {
+	cases := []string{
+		"当前环境限制，我无法直接执行系统命令查看你的内存占用。",
+		"我无法访问你的电脑或本机文件。",
+		"I cannot execute commands in your local machine.",
+		"I can't access your computer directly.",
+	}
+	for _, tc := range cases {
+		if !LooksLikeRefusal(tc) {
+			t.Fatalf("LooksLikeRefusal(%q) = false", tc)
+		}
+	}
+}
+
+func TestInferToolCallsFromTextConvertsMemoryRefusalToBash(t *testing.T) {
+	calls := InferToolCallsFromText("当前无法执行系统命令。你可以运行 vm_stat 查看内存占用。", []ToolDef{{
+		Name: "Bash",
+		InputSchema: map[string]any{
+			"properties": map[string]any{
+				"command": map[string]any{"type": "string"},
+			},
+			"required": []any{"command"},
+		},
+	}})
+	if len(calls) != 1 {
+		t.Fatalf("call count = %d", len(calls))
+	}
+	if calls[0].Name != "Bash" {
+		t.Fatalf("tool name = %q", calls[0].Name)
+	}
+	command, _ := calls[0].Arguments["command"].(string)
+	if !strings.Contains(command, "vm_stat") || !strings.Contains(command, "memory_pressure") {
+		t.Fatalf("unexpected command = %q", command)
 	}
 }
 

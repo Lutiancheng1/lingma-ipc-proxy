@@ -402,6 +402,7 @@ func ForceToolingPrompt(choice ToolChoice) string {
 		"You must respond with at least one valid action block now. " +
 		"Select the single most appropriate available tool for the user request. " +
 		"The proxy tools from the previous system message are available even if native Lingma tools are not. " +
+		"If the user asked to inspect the local computer, run a shell command, read files, search files, or check current data, call the matching tool immediately. " +
 		"Do not explain. Do not say tools are unavailable. Output the action block directly."
 	if choice.Mode == "tool" && strings.TrimSpace(choice.Name) != "" {
 		prompt += " You must call \"" + strings.TrimSpace(choice.Name) + "\"."
@@ -420,12 +421,28 @@ func LooksLikeRefusal(text string) bool {
 		"tools are unavailable",
 		"cannot call tools",
 		"can't call tools",
+		"cannot execute",
+		"can't execute",
+		"cannot run commands",
+		"can't run commands",
+		"cannot access your computer",
+		"can't access your computer",
+		"cannot access your local machine",
+		"can't access your local machine",
 		"没有可用的工具",
 		"无法调用",
 		"工具不可用",
 		"不能调用工具",
 		"我不具备",
 		"受限于当前环境",
+		"当前环境限制",
+		"无法直接执行",
+		"不能直接执行",
+		"无法执行系统命令",
+		"不能执行系统命令",
+		"无法访问你的电脑",
+		"无法访问本机",
+		"没有权限访问",
 	}
 	for _, needle := range needles {
 		if strings.Contains(t, needle) {
@@ -455,9 +472,16 @@ func LooksLikeMissedToolUse(text string) bool {
 		"i will search",
 		"please run",
 		"manually run",
+		"run the following command",
+		"you can run",
+		"you could run",
 		"paste the file",
 		"无法直接访问",
 		"无法直接查询",
+		"无法直接查看",
+		"无法直接执行",
+		"不能直接执行",
+		"无法执行系统命令",
 		"没有可用",
 		"no tools available",
 		"native lingma tools",
@@ -470,6 +494,10 @@ func LooksLikeMissedToolUse(text string) bool {
 		"查看文件",
 		"查询天气",
 		"手动运行",
+		"你可以在终端中运行",
+		"你可以运行",
+		"请你运行",
+		"请手动运行",
 		"粘贴给我",
 		"切换到计划模式",
 	}
@@ -479,6 +507,60 @@ func LooksLikeMissedToolUse(text string) bool {
 		}
 	}
 	return false
+}
+
+func InferToolCallsFromText(text string, tools []ToolDef) []ToolCall {
+	if !LooksLikeRefusal(text) && !LooksLikeMissedToolUse(text) {
+		return nil
+	}
+
+	commandTool, ok := selectCommandTool(tools)
+	if !ok {
+		return nil
+	}
+
+	if command := inferLocalCommand(text); command != "" {
+		return []ToolCall{{
+			ID:   newCallID(),
+			Name: commandTool.Name,
+			Arguments: filterArgsBySchema(map[string]any{
+				"command": command,
+			}, commandTool.InputSchema),
+		}}
+	}
+	return nil
+}
+
+func selectCommandTool(tools []ToolDef) (ToolDef, bool) {
+	for _, tool := range tools {
+		name := strings.ToLower(strings.TrimSpace(tool.Name))
+		if name == "bash" || name == "terminal" || name == "shell" || strings.Contains(name, "bash") || strings.Contains(name, "terminal") || strings.Contains(name, "shell") {
+			if toolHasCommandArg(tool.InputSchema) {
+				return tool, true
+			}
+		}
+	}
+	for _, tool := range tools {
+		if toolHasCommandArg(tool.InputSchema) {
+			return tool, true
+		}
+	}
+	return ToolDef{}, false
+}
+
+func toolHasCommandArg(schema map[string]any) bool {
+	props, _ := schema["properties"].(map[string]any)
+	_, ok := props["command"]
+	return ok
+}
+
+func inferLocalCommand(text string) string {
+	t := strings.ToLower(strings.TrimSpace(text))
+	switch {
+	case strings.Contains(t, "内存") || strings.Contains(t, "memory") || strings.Contains(t, "physmem") || strings.Contains(t, "vm_stat"):
+		return `vm_stat && echo "---" && memory_pressure && echo "---" && top -l 1 -s 0 | head -n 15`
+	}
+	return ""
 }
 
 func ParseActionBlocks(text string, tools []ToolDef, cfg Config) ([]ToolCall, string, error) {

@@ -24,9 +24,13 @@ import (
 type fileConfig struct {
 	Host            string `json:"host"`
 	Port            int    `json:"port"`
+	Backend         string `json:"backend"`
 	Transport       string `json:"transport"`
 	Pipe            string `json:"pipe"`
 	WebSocketURL    string `json:"websocket_url"`
+	RemoteBaseURL   string `json:"remote_base_url"`
+	RemoteAuthFile  string `json:"remote_auth_file"`
+	RemoteVersion   string `json:"remote_version"`
 	Cwd             string `json:"cwd"`
 	CurrentFilePath string `json:"current_file_path"`
 	Mode            string `json:"mode"`
@@ -87,6 +91,7 @@ func loadConfig() (service.Config, string) {
 	cfg := service.Config{
 		Host:        "127.0.0.1",
 		Port:        8095,
+		Backend:     service.BackendIPC,
 		Transport:   lingmaipc.TransportAuto,
 		Cwd:         currentDir(),
 		Mode:        "agent",
@@ -110,8 +115,12 @@ func loadConfig() (service.Config, string) {
 	host := flag.String("host", cfg.Host, "Listen host")
 	port := flag.Int("port", cfg.Port, "Listen port")
 	transport := flag.String("transport", string(cfg.Transport), "Lingma transport: auto, pipe, websocket")
+	backend := flag.String("backend", string(cfg.Backend), "Backend mode: ipc or remote")
 	pipe := flag.String("pipe", cfg.Pipe, "Explicit Lingma named pipe path")
 	wsURL := flag.String("ws-url", cfg.WebSocketURL, "Explicit Lingma local websocket URL")
+	remoteBaseURL := flag.String("remote-base-url", cfg.RemoteBaseURL, "Remote Lingma API base URL")
+	remoteAuthFile := flag.String("remote-auth-file", cfg.RemoteAuthFile, "Remote Lingma credentials.json path; empty reads ~/.lingma cache")
+	remoteVersion := flag.String("remote-version", cfg.RemoteVersion, "Remote Lingma cosy version")
 	cwd := flag.String("cwd", cfg.Cwd, "Working directory used when creating Lingma sessions")
 	currentFilePath := flag.String("current-file-path", cfg.CurrentFilePath, "Current file path sent through ACP meta")
 	mode := flag.String("mode", cfg.Mode, "Lingma ACP mode value")
@@ -128,9 +137,13 @@ func loadConfig() (service.Config, string) {
 
 	cfg.Host = strings.TrimSpace(*host)
 	cfg.Port = *port
+	cfg.Backend = parseBackend(*backend)
 	cfg.Transport = parsedTransport
 	cfg.Pipe = strings.TrimSpace(*pipe)
 	cfg.WebSocketURL = strings.TrimSpace(*wsURL)
+	cfg.RemoteBaseURL = strings.TrimSpace(*remoteBaseURL)
+	cfg.RemoteAuthFile = strings.TrimSpace(*remoteAuthFile)
+	cfg.RemoteVersion = strings.TrimSpace(*remoteVersion)
 	cfg.Cwd = strings.TrimSpace(*cwd)
 	cfg.CurrentFilePath = strings.TrimSpace(*currentFilePath)
 	cfg.Mode = strings.TrimSpace(*mode)
@@ -184,11 +197,23 @@ func overlayFileConfig(dst *service.Config, src fileConfig) {
 	if strings.TrimSpace(src.Transport) != "" {
 		dst.Transport = parseTransport(src.Transport)
 	}
+	if strings.TrimSpace(src.Backend) != "" {
+		dst.Backend = parseBackend(src.Backend)
+	}
 	if strings.TrimSpace(src.Pipe) != "" {
 		dst.Pipe = strings.TrimSpace(src.Pipe)
 	}
 	if strings.TrimSpace(src.WebSocketURL) != "" {
 		dst.WebSocketURL = strings.TrimSpace(src.WebSocketURL)
+	}
+	if strings.TrimSpace(src.RemoteBaseURL) != "" {
+		dst.RemoteBaseURL = strings.TrimSpace(src.RemoteBaseURL)
+	}
+	if strings.TrimSpace(src.RemoteAuthFile) != "" {
+		dst.RemoteAuthFile = strings.TrimSpace(src.RemoteAuthFile)
+	}
+	if strings.TrimSpace(src.RemoteVersion) != "" {
+		dst.RemoteVersion = strings.TrimSpace(src.RemoteVersion)
 	}
 	if strings.TrimSpace(src.Cwd) != "" {
 		dst.Cwd = strings.TrimSpace(src.Cwd)
@@ -223,11 +248,23 @@ func overlayEnvConfig(dst *service.Config) {
 	if value := strings.TrimSpace(os.Getenv("LINGMA_PROXY_TRANSPORT")); value != "" {
 		dst.Transport = parseTransport(value)
 	}
+	if value := strings.TrimSpace(os.Getenv("LINGMA_PROXY_BACKEND")); value != "" {
+		dst.Backend = parseBackend(value)
+	}
 	if value := strings.TrimSpace(os.Getenv("LINGMA_IPC_PIPE")); value != "" {
 		dst.Pipe = value
 	}
 	if value := strings.TrimSpace(os.Getenv("LINGMA_PROXY_WS_URL")); value != "" {
 		dst.WebSocketURL = value
+	}
+	if value := strings.TrimSpace(os.Getenv("LINGMA_REMOTE_BASE_URL")); value != "" {
+		dst.RemoteBaseURL = value
+	}
+	if value := strings.TrimSpace(os.Getenv("LINGMA_REMOTE_AUTH_FILE")); value != "" {
+		dst.RemoteAuthFile = value
+	}
+	if value := strings.TrimSpace(os.Getenv("LINGMA_REMOTE_VERSION")); value != "" {
+		dst.RemoteVersion = value
 	}
 	if value := strings.TrimSpace(os.Getenv("LINGMA_PROXY_CWD")); value != "" {
 		dst.Cwd = value
@@ -260,6 +297,19 @@ func parseSessionMode(value string) service.SessionMode {
 	default:
 		log.Fatalf("invalid session mode %q; expected auto, fresh, or reuse", value)
 		return service.SessionModeAuto
+	}
+}
+
+func parseBackend(value string) service.BackendMode {
+	mode := service.BackendMode(strings.ToLower(strings.TrimSpace(value)))
+	switch mode {
+	case "", service.BackendIPC:
+		return service.BackendIPC
+	case service.BackendRemote:
+		return service.BackendRemote
+	default:
+		log.Fatalf("invalid backend %q; expected ipc or remote", value)
+		return service.BackendIPC
 	}
 }
 

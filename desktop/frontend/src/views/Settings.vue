@@ -9,6 +9,10 @@ const saving = ref(false)
 const openSelect = ref('')
 
 const selectOptions = {
+  Backend: [
+    { value: 'ipc', label: 'IPC 插件' },
+    { value: 'remote', label: '远端 API' },
+  ],
   Transport: [
     { value: 'auto', label: '自动' },
     { value: 'pipe', label: '命名管道' },
@@ -89,6 +93,26 @@ async function save() {
         </div>
         <div class="form-grid">
           <div class="field">
+            <label>连接模式</label>
+            <div class="custom-select" :class="{ open: openSelect === 'Backend' }">
+              <button type="button" @click="toggleSelect('Backend')">
+                <span>{{ selectLabel('Backend') }}</span>
+                <i class="bi bi-chevron-down" aria-hidden="true"></i>
+              </button>
+              <div v-if="openSelect === 'Backend'" class="select-menu">
+                <button
+                  v-for="option in selectOptions.Backend"
+                  :key="option.value"
+                  :class="{ selected: option.value === config.Backend }"
+                  type="button"
+                  @click="chooseOption('Backend', option.value)"
+                >
+                  {{ option.label }}
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="field">
             <label>主机</label>
             <input v-model="config.Host" type="text" placeholder="127.0.0.1" />
           </div>
@@ -128,10 +152,22 @@ async function save() {
             <label>命名管道</label>
             <input v-model="config.Pipe" type="text" placeholder="留空自动探测 Windows Named Pipe" />
           </div>
+          <div class="field span-2">
+            <label>远端 API 域名</label>
+            <input v-model="config.RemoteBaseURL" type="text" placeholder="留空自动探测，默认 https://lingma.alibabacloud.com" />
+          </div>
+          <div class="field span-2">
+            <label>远端认证文件</label>
+            <input v-model="config.RemoteAuthFile" type="text" placeholder="可选 credentials.json；留空只读 ~/.lingma/cache/user" />
+          </div>
+          <div class="field span-2">
+            <label>远端 Cosy 版本</label>
+            <input v-model="config.RemoteVersion" type="text" placeholder="默认 2.11.2" />
+          </div>
         </div>
         <div class="hint-box">
           <strong>自动探测失败时</strong>
-          <span>先确认 VS Code / Lingma 插件已启动并登录。macOS 通常填写 WebSocket，例如 <code>ws://127.0.0.1:36510/</code>；Windows 可填写命名管道，例如 <code>\\.\pipe\lingma-xxxx</code>，也可填写 WebSocket，例如 <code>ws://127.0.0.1:36510/</code>。</span>
+          <span>IPC 模式先确认 VS Code / Lingma 插件已启动并登录。远端 API 模式会优先读取认证文件；留空时只读 <code>~/.lingma/cache/user</code>，不会写入或上传登录态。</span>
         </div>
       </div>
 

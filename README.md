@@ -6,9 +6,14 @@ Lingma IPC Proxy exposes Tongyi Lingma's local IDE plugin capability as standard
 
 The project is designed for tools such as Claude Code, Cline, Continue, OpenCode, custom agents, and any client that can talk to OpenAI or Anthropic style APIs.
 
+The proxy now supports two backend modes:
+
+- **IPC plugin mode (default)**: connects to the local Lingma IDE plugin over WebSocket / Named Pipe. This is the safest daily mode and keeps behavior closest to the IDE plugin.
+- **Remote API mode (experimental)**: imports the local Lingma login cache or an explicit credential file and calls Lingma remote APIs directly. This can feel more like an official API and does not depend on an IDE IPC session, but it relies on non-public login and signing details that may change.
+
 ## Current Version
 
-The current desktop line is `v1.3.2`.
+The current desktop line is `v1.4.0`.
 
 Release builds are produced by GitHub Actions for:
 
@@ -63,9 +68,11 @@ Narrow window layout:
 
 | API | Endpoint | Support |
 | --- | --- | --- |
-| Health | `GET /` and `GET /health` | supported |
+| Health | `GET /`, `HEAD /`, `GET /health`, `HEAD /health` | supported |
 | Models | `GET /v1/models` | supported |
 | Capability Discovery | `GET /capabilities`, `GET /v1/capabilities` | supported |
+| Debug Requests | `GET /debug/requests`, `GET /debug/logs` | recent HTTP request history |
+| Debug Aliases | `GET /api/requests`, `GET /api/logs` | aliases for request/log inspection |
 | LM Studio / Ollama Discovery | `GET /api/v1/models`, `GET /api/tags`, `GET /props` | supported |
 | OpenAI Chat Completions | `POST /v1/chat/completions` | streaming and non-streaming |
 | OpenAI Chat Alias | `POST /api/v1/chat/completions` | supported |
@@ -78,6 +85,7 @@ Compared with the original protocol proof of concept, this repository focuses on
 - **Function Calling / Tools** for both OpenAI and Anthropic clients.
 - **Tool result continuation** for multi-step agent loops.
 - **Tool stability hardening** with proxy-side routing hints, core tool examples, missed-tool retry, and common alias mapping such as `Bash` to `terminal` and `Read` to `read_file`.
+- **Anthropic streaming tool-call hardening** so streaming clients such as Claude Code receive final `tool_use` events instead of premature refusal text when tools are present.
 - **Image input** for OpenAI `image_url` and Anthropic image blocks.
 - **Local and remote image normalization** for data URLs, HTTP URLs, `file://` URLs, and absolute local paths, with automatic JPEG downscaling for large images.
 - **Request log image redaction** so large base64 payloads are visible as image markers instead of breaking the desktop log view.
@@ -120,11 +128,14 @@ flowchart LR
   Service --> Session["Session Manager"]
   Service --> Tools["Tool Emulation"]
   Service --> Models["Model Discovery"]
-  Service --> Transport["Lingma Transport"]
+  Service --> Backend{"Backend Mode"}
+  Backend --> Transport["IPC Plugin Transport"]
+  Backend --> Remote["Remote API Client"]
   Transport --> Pipe["Windows Named Pipe"]
   Transport --> WS["macOS / Windows WebSocket"]
   Pipe --> Lingma["Tongyi Lingma IDE Plugin"]
   WS --> Lingma
+  Remote --> Cloud["Lingma Remote API"]
 ```
 
 ### Module Layout
@@ -135,6 +146,7 @@ flowchart LR
 | `internal/httpapi` | OpenAI/Anthropic HTTP routes, streaming SSE responses, request recording |
 | `internal/service` | request orchestration, sessions, model discovery, proxy lifecycle |
 | `internal/lingmaipc` | Lingma JSON-RPC transport over Named Pipe and WebSocket |
+| `internal/remote` | remote Lingma login-cache import, signing, model list, and SSE parsing |
 | `internal/toolemulation` | tool definition injection, action block parsing, tool result projection |
 | `desktop` | Wails desktop shell, native window commands, proxy control bridge |
 | `desktop/frontend` | Vue UI for dashboard, requests, models, settings, and logs |
@@ -154,6 +166,66 @@ If auto detection fails, set the path manually in the desktop Settings page or p
 lingma-ipc-proxy --transport websocket --ws-url ws://127.0.0.1:36510 --port 8095
 lingma-ipc-proxy --transport pipe --pipe '\\.\pipe\lingma-ipc'
 ```
+
+## Backend Modes
+
+### IPC Plugin Mode (Default)
+
+IPC mode talks to the local Lingma IDE plugin:
+
+```bash
+lingma-ipc-proxy --backend ipc --transport auto --port 8095
+```
+
+Use this when VS Code / the Lingma plugin is already running, when you want plugin session behavior, or when you want the model list exposed by the local plugin.
+
+### Remote API Mode (Experimental)
+
+Remote mode calls Lingma's remote API directly:
+
+```bash
+lingma-ipc-proxy --backend remote --port 8095
+```
+
+By default it reads the local Lingma login cache in read-only mode:
+
+```text
+~/.lingma/cache/user
+~/.lingma/cache/id
+~/.lingma/logs/lingma.log
+```
+
+You can also pass an explicit credential file:
+
+```bash
+lingma-ipc-proxy \
+  --backend remote \
+  --remote-base-url https://lingma.alibabacloud.com \
+  --remote-auth-file ~/.config/lingma-ipc-proxy/credentials.json
+```
+
+Credential file format:
+
+```json
+{
+  "source": "manual",
+  "token_expire_time": "1777520000000",
+  "auth": {
+    "cosy_key": "xxx",
+    "encrypt_user_info": "xxx",
+    "user_id": "123",
+    "machine_id": "xxxxxxxxxxxxxxxx"
+  }
+}
+```
+
+Notes:
+
+- Remote mode does not write or migrate login state. It only reads the local Lingma cache or the credential file you provide.
+- If your Lingma plugin uses a dedicated domain, set `--remote-base-url`, `LINGMA_REMOTE_BASE_URL`, or the JSON config field explicitly.
+- `/v1/models` in remote mode returns remote API model keys, which may not match the IPC plugin display IDs such as `MiniMax-M2.7` or `Kimi-K2.6`.
+- Local validation passed `/health`, `/v1/models`, OpenAI streaming/non-streaming chat, and Claude Code Anthropic + Bash tool use. Claude Code full tool runs are much slower than simple OpenAI requests because the client sends a large context and performs a second tool-result turn.
+- This mode is inspired by the remote API and credential-signing research in [ZipperCode/lingma2api](https://github.com/ZipperCode/lingma2api), integrated here as a switchable backend under the existing OpenAI / Anthropic / desktop app architecture.
 
 ## Quick Start
 
@@ -262,7 +334,11 @@ Example:
 {
   "host": "127.0.0.1",
   "port": 8095,
+  "backend": "ipc",
   "transport": "auto",
+  "remote_base_url": "",
+  "remote_auth_file": "",
+  "remote_version": "",
   "mode": "agent",
   "shell_type": "zsh",
   "session_mode": "auto",
@@ -311,8 +387,35 @@ Current proxy hardening includes:
 - dedicated examples for `read_file`, `search_files`, `terminal`, and `web_search`
 - automatic retry when the model says it cannot access files, terminal, or web despite tools being present
 - common tool alias normalization such as `Bash` -> `terminal`, `Read` -> `read_file`, `Grep` -> `search_files`, and `Edit` -> `patch`
+- Anthropic `stream=true` requests with tools are resolved internally before streaming the final `tool_use` blocks, which avoids sending premature "please run this command yourself" text to clients such as Claude Code.
 
 In local smoke tests after this hardening, `MiniMax-M2.7`, `Kimi-K2.6`, `Qwen3.6-Plus`, and `Qwen3-Coder` all completed read/search/terminal/web/patch/vision checks, with `MiniMax-M2.7` having the lowest average latency in the tested set.
+
+## Request And Log Inspection
+
+The desktop app keeps a visual request stream, and the HTTP server also exposes a small read-only debug history for CLI troubleshooting.
+
+Useful endpoints:
+
+```bash
+curl http://127.0.0.1:8095/health
+curl -I http://127.0.0.1:8095/
+curl 'http://127.0.0.1:8095/debug/requests?limit=20'
+curl 'http://127.0.0.1:8095/debug/logs?limit=20'
+```
+
+`/debug/requests` and `/debug/logs` return the newest records first. Each record includes:
+
+- request time
+- HTTP method and path
+- status code
+- duration in milliseconds
+- sanitized request body
+- sanitized response body
+
+The server keeps the most recent 200 HTTP records in memory. Image payloads and large base64 strings are redacted before recording, and very large bodies are truncated to keep the desktop UI responsive.
+
+These debug endpoints are intended for local development and client-adapter troubleshooting. They should only be exposed on trusted localhost networks.
 
 ## Local Desktop Build
 
@@ -344,7 +447,7 @@ The desktop bundle name is always `Lingma IPC Proxy`.
 
 The release workflow is triggered by:
 
-- pushing a tag such as `v1.3.2`
+- pushing a tag such as `v1.4.0`
 - manually running the `Release` workflow with a tag input
 
 Planned improvements:

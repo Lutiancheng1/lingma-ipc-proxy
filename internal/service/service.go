@@ -15,7 +15,15 @@ import (
 	"time"
 
 	"lingma-ipc-proxy/internal/lingmaipc"
+	"lingma-ipc-proxy/internal/remote"
 	"lingma-ipc-proxy/internal/toolemulation"
+)
+
+type BackendMode string
+
+const (
+	BackendIPC    BackendMode = "ipc"
+	BackendRemote BackendMode = "remote"
 )
 
 type SessionMode string
@@ -29,9 +37,13 @@ const (
 type Config struct {
 	Host            string
 	Port            int
+	Backend         BackendMode
 	Transport       lingmaipc.Transport
 	Pipe            string
 	WebSocketURL    string
+	RemoteBaseURL   string
+	RemoteAuthFile  string
+	RemoteVersion   string
 	Cwd             string
 	CurrentFilePath string
 	Mode            string
@@ -129,6 +141,7 @@ type Service struct {
 	stickySessionID string
 	stickyModelID   string
 	modelMap        map[string]string // official name -> internal id
+	remoteClient    *remote.Client
 }
 
 type promptRunResult struct {
@@ -158,6 +171,9 @@ func New(cfg Config) *Service {
 	if cfg.Transport == "" {
 		cfg.Transport = lingmaipc.TransportAuto
 	}
+	if cfg.Backend == "" {
+		cfg.Backend = BackendIPC
+	}
 	if cfg.SessionMode == "" {
 		cfg.SessionMode = SessionModeAuto
 	}
@@ -177,6 +193,9 @@ func (s *Service) DefaultModel() string {
 }
 
 func (s *Service) Warmup(ctx context.Context) error {
+	if s.backend() == BackendRemote {
+		return s.remoteClientLocked().Warmup(ctx)
+	}
 	_, err := s.ensureConnected(ctx)
 	return err
 }
@@ -190,6 +209,14 @@ func (s *Service) Close() error {
 func (s *Service) State() State {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.cfg.Backend == BackendRemote {
+		return State{
+			Endpoint:    remote.ResolveBaseURL(s.cfg.RemoteBaseURL),
+			Transport:   "remote",
+			Connected:   s.remoteClient != nil,
+			SessionMode: s.cfg.SessionMode,
+		}
+	}
 	return State{
 		PipePath:        s.pipePath,
 		Endpoint:        s.endpoint,
@@ -201,6 +228,29 @@ func (s *Service) State() State {
 }
 
 func (s *Service) ListModels(ctx context.Context) ([]Model, error) {
+	if s.backend() == BackendRemote {
+		models, err := s.remoteClientLocked().ListModels(ctx)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]Model, 0, len(models)+1)
+		seen := map[string]bool{"Auto": true}
+		out = append(out, Model{ID: "Auto", Name: "Auto"})
+		for _, model := range models {
+			id := strings.TrimSpace(model.Key)
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			name := strings.TrimSpace(model.DisplayName)
+			if name == "" {
+				name = id
+			}
+			out = append(out, Model{ID: id, Name: name})
+		}
+		return out, nil
+	}
+
 	ipcClient, err := s.ensureConnected(ctx)
 	if err != nil {
 		return nil, err
@@ -229,6 +279,9 @@ func (s *Service) ListModels(ctx context.Context) ([]Model, error) {
 }
 
 func (s *Service) Generate(ctx context.Context, req ChatRequest) (*ChatResult, error) {
+	if s.backend() == BackendRemote {
+		return s.generateRemote(ctx, req, nil)
+	}
 	return s.generateWithReconnect(ctx, req, nil)
 }
 
@@ -237,7 +290,11 @@ func (s *Service) GenerateStream(ctx context.Context, req ChatRequest) (<-chan S
 	done := make(chan StreamResult, 1)
 
 	go func() {
-		result, err := s.generateWithReconnect(ctx, req, func(delta string) {
+		generate := s.generateWithReconnect
+		if s.backend() == BackendRemote {
+			generate = s.generateRemote
+		}
+		result, err := generate(ctx, req, func(delta string) {
 			if delta == "" {
 				return
 			}
@@ -267,6 +324,67 @@ func (s *Service) generateWithReconnect(
 
 	s.resetConnection()
 	return s.generateLocked(ctx, req, onDelta)
+}
+
+func (s *Service) generateRemote(
+	ctx context.Context,
+	req ChatRequest,
+	onDelta func(string),
+) (*ChatResult, error) {
+	requestCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
+	defer cancel()
+
+	if strings.TrimSpace(req.Model) == "" {
+		req.Model = s.DefaultModel()
+	}
+	prompt, err := buildLingmaPrompt(req, SessionModeFresh)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(prompt) == "" {
+		return nil, errors.New("empty user message")
+	}
+
+	client := s.remoteClientLocked()
+	remoteResult, err := client.Chat(requestCtx, remote.ChatRequest{
+		Model:       req.Model,
+		Prompt:      prompt,
+		Stream:      onDelta != nil,
+		Temperature: req.Temperature,
+	}, onDelta)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &ChatResult{
+		Text:             remoteResult.Text,
+		Model:            valueOr(strings.TrimSpace(req.Model), "lingma"),
+		InputTokens:      remoteResult.InputTokens,
+		OutputTokens:     remoteResult.OutputTokens,
+		SessionID:        "",
+		RequestID:        remoteResult.RequestID,
+		FinishReason:     "stop",
+		StopReason:       "stop",
+		Endpoint:         remote.ResolveBaseURL(s.cfg.RemoteBaseURL),
+		Transport:        "remote",
+		EffectiveSession: SessionModeFresh,
+	}
+	s.applyToolEmulation(requestCtx, req, prompt, result, onDelta, func(hintPrompt string) (string, int, error) {
+		retryResult, retryErr := client.Chat(requestCtx, remote.ChatRequest{
+			Model:       req.Model,
+			Prompt:      hintPrompt,
+			Stream:      onDelta != nil,
+			Temperature: req.Temperature,
+		}, onDelta)
+		if retryErr != nil {
+			return "", 0, retryErr
+		}
+		if retryResult == nil {
+			return "", 0, nil
+		}
+		return retryResult.Text, retryResult.OutputTokens, nil
+	})
+	return result, nil
 }
 
 func (s *Service) generateLocked(
@@ -361,6 +479,56 @@ func (s *Service) generateLocked(
 
 	result = s.buildChatResult(req, sessionID, requestID, prompt, runResult, effectiveMode)
 
+	s.applyToolEmulation(requestCtx, req, prompt, result, onDelta, func(hintPrompt string) (string, int, error) {
+		retryRequestID := lingmaipc.CreateRequestID("serve-tool")
+		retryMeta := lingmaipc.CreateMeta(lingmaipc.MetaOptions{
+			RequestID:       retryRequestID,
+			Mode:            s.cfg.Mode,
+			Model:           internalModelID,
+			ShellType:       s.cfg.ShellType,
+			CurrentFilePath: s.cfg.CurrentFilePath,
+			EnabledMCP:      []any{},
+		})
+		retryRunResult, retryErr := s.runPromptLocked(requestCtx, ipcClient, sessionID, hintPrompt, images, retryRequestID, retryMeta, onDelta)
+		if retryErr != nil {
+			return "", 0, retryErr
+		}
+		return retryRunResult.AssistantText, estimateTokens(retryRunResult.AssistantText), nil
+	})
+	return result, nil
+}
+
+func (s *Service) backend() BackendMode {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cfg.Backend == "" {
+		return BackendIPC
+	}
+	return s.cfg.Backend
+}
+
+func (s *Service) remoteClientLocked() *remote.Client {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.remoteClient == nil {
+		s.remoteClient = remote.New(remote.Config{
+			BaseURL:     s.cfg.RemoteBaseURL,
+			AuthFile:    s.cfg.RemoteAuthFile,
+			CosyVersion: s.cfg.RemoteVersion,
+			Timeout:     s.cfg.Timeout,
+		})
+	}
+	return s.remoteClient
+}
+
+func (s *Service) applyToolEmulation(
+	ctx context.Context,
+	req ChatRequest,
+	prompt string,
+	result *ChatResult,
+	onDelta func(string),
+	retry func(string) (string, int, error),
+) {
 	if len(req.Tools) > 0 {
 		calls, remaining, parseErr := toolemulation.ParseActionBlocks(result.Text, req.Tools, toolemulation.Config{})
 		if parseErr == nil && len(calls) > 0 {
@@ -368,28 +536,36 @@ func (s *Service) generateLocked(
 			result.ToolCalls = calls
 		} else if shouldRetryTooling(req.ToolChoice, result.Text) {
 			hintPrompt := prompt + "\n\n" + toolemulation.ForceToolingPrompt(req.ToolChoice)
-			retryRequestID := lingmaipc.CreateRequestID("retry")
-			retryMeta := lingmaipc.CreateMeta(lingmaipc.MetaOptions{
-				RequestID:       retryRequestID,
-				Mode:            s.cfg.Mode,
-				Model:           internalModelID,
-				ShellType:       s.cfg.ShellType,
-				CurrentFilePath: s.cfg.CurrentFilePath,
-				EnabledMCP:      []any{},
-			})
-			retryResult, retryErr := s.runPromptLocked(requestCtx, ipcClient, sessionID, hintPrompt, nil, retryRequestID, retryMeta, onDelta)
-			if retryErr == nil && retryResult != nil {
-				retryCalls, retryRemaining, retryParseErr := toolemulation.ParseActionBlocks(retryResult.AssistantText, req.Tools, toolemulation.Config{})
+			retryText := ""
+			if retry != nil {
+				text, outputTokens, retryErr := retry(hintPrompt)
+				if retryErr == nil {
+					retryText = text
+					if outputTokens > 0 {
+						result.OutputTokens = outputTokens
+					}
+				}
+			}
+			if retryText != "" {
+				retryCalls, retryRemaining, retryParseErr := toolemulation.ParseActionBlocks(retryText, req.Tools, toolemulation.Config{})
 				if retryParseErr == nil && len(retryCalls) > 0 {
 					result.Text = retryRemaining
 					result.ToolCalls = retryCalls
-					result.OutputTokens = estimateTokens(retryResult.AssistantText)
+					result.OutputTokens = estimateTokens(retryText)
+				} else if inferred := toolemulation.InferToolCallsFromText(retryText, req.Tools); len(inferred) > 0 {
+					result.Text = ""
+					result.ToolCalls = inferred
+					result.OutputTokens = estimateTokens(retryText)
+				}
+			}
+			if len(result.ToolCalls) == 0 {
+				if inferred := toolemulation.InferToolCallsFromText(result.Text, req.Tools); len(inferred) > 0 {
+					result.Text = ""
+					result.ToolCalls = inferred
 				}
 			}
 		}
 	}
-
-	return result, nil
 }
 
 func shouldRetryTooling(choice toolemulation.ToolChoice, text string) bool {

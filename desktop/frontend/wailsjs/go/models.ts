@@ -66,9 +66,13 @@ export namespace service {
 	export class Config {
 	    Host: string;
 	    Port: number;
+	    Backend: string;
 	    Transport: string;
 	    Pipe: string;
 	    WebSocketURL: string;
+	    RemoteBaseURL: string;
+	    RemoteAuthFile: string;
+	    RemoteVersion: string;
 	    Cwd: string;
 	    CurrentFilePath: string;
 	    Mode: string;
@@ -85,9 +89,13 @@ export namespace service {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.Host = source["Host"];
 	        this.Port = source["Port"];
+	        this.Backend = source["Backend"];
 	        this.Transport = source["Transport"];
 	        this.Pipe = source["Pipe"];
 	        this.WebSocketURL = source["WebSocketURL"];
+	        this.RemoteBaseURL = source["RemoteBaseURL"];
+	        this.RemoteAuthFile = source["RemoteAuthFile"];
+	        this.RemoteVersion = source["RemoteVersion"];
 	        this.Cwd = source["Cwd"];
 	        this.CurrentFilePath = source["CurrentFilePath"];
 	        this.Mode = source["Mode"];

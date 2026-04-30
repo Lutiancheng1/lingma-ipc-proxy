@@ -260,9 +260,13 @@ func (a *App) saveConfig(cfg service.Config) error {
 	fileCfg := map[string]any{
 		"host":              cfg.Host,
 		"port":              cfg.Port,
+		"backend":           string(cfg.Backend),
 		"transport":         string(cfg.Transport),
 		"pipe":              cfg.Pipe,
 		"websocket_url":     cfg.WebSocketURL,
+		"remote_base_url":   cfg.RemoteBaseURL,
+		"remote_auth_file":  cfg.RemoteAuthFile,
+		"remote_version":    cfg.RemoteVersion,
 		"cwd":               cfg.Cwd,
 		"current_file_path": cfg.CurrentFilePath,
 		"mode":              cfg.Mode,
@@ -510,6 +514,7 @@ func defaultConfig() service.Config {
 	cfg := service.Config{
 		Host:        "127.0.0.1",
 		Port:        8095,
+		Backend:     service.BackendIPC,
 		Transport:   lingmaipc.TransportAuto,
 		Cwd:         defaultCwd(),
 		Mode:        "agent",
@@ -527,9 +532,13 @@ func defaultConfig() service.Config {
 				var fileCfg struct {
 					Host            string `json:"host"`
 					Port            int    `json:"port"`
+					Backend         string `json:"backend"`
 					Transport       string `json:"transport"`
 					Pipe            string `json:"pipe"`
 					WebSocketURL    string `json:"websocket_url"`
+					RemoteBaseURL   string `json:"remote_base_url"`
+					RemoteAuthFile  string `json:"remote_auth_file"`
+					RemoteVersion   string `json:"remote_version"`
 					Cwd             string `json:"cwd"`
 					CurrentFilePath string `json:"current_file_path"`
 					Mode            string `json:"mode"`
@@ -545,6 +554,9 @@ func defaultConfig() service.Config {
 					if fileCfg.Port > 0 {
 						cfg.Port = fileCfg.Port
 					}
+					if fileCfg.Backend != "" {
+						cfg.Backend = service.BackendMode(fileCfg.Backend)
+					}
 					if fileCfg.Transport != "" {
 						if t, err := lingmaipc.ParseTransport(fileCfg.Transport); err == nil {
 							cfg.Transport = t
@@ -555,6 +567,15 @@ func defaultConfig() service.Config {
 					}
 					if fileCfg.WebSocketURL != "" {
 						cfg.WebSocketURL = fileCfg.WebSocketURL
+					}
+					if fileCfg.RemoteBaseURL != "" {
+						cfg.RemoteBaseURL = fileCfg.RemoteBaseURL
+					}
+					if fileCfg.RemoteAuthFile != "" {
+						cfg.RemoteAuthFile = fileCfg.RemoteAuthFile
+					}
+					if fileCfg.RemoteVersion != "" {
+						cfg.RemoteVersion = fileCfg.RemoteVersion
 					}
 					if fileCfg.Cwd != "" {
 						cfg.Cwd = fileCfg.Cwd
