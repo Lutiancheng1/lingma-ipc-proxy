@@ -91,11 +91,11 @@ func loadConfig() (service.Config, string) {
 	cfg := service.Config{
 		Host:        "127.0.0.1",
 		Port:        8095,
-		Backend:     service.BackendIPC,
+		Backend:     service.BackendRemote,
 		Transport:   lingmaipc.TransportAuto,
 		Cwd:         currentDir(),
 		Mode:        "agent",
-		Model:       "MiniMax-M2.7",
+		Model:       "kmodel",
 		ShellType:   defaultShellType(),
 		SessionMode: service.SessionModeAuto,
 		Timeout:     120 * time.Second,
@@ -303,7 +303,9 @@ func parseSessionMode(value string) service.SessionMode {
 func parseBackend(value string) service.BackendMode {
 	mode := service.BackendMode(strings.ToLower(strings.TrimSpace(value)))
 	switch mode {
-	case "", service.BackendIPC:
+	case "":
+		return service.BackendRemote
+	case service.BackendIPC:
 		return service.BackendIPC
 	case service.BackendRemote:
 		return service.BackendRemote

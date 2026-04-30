@@ -286,10 +286,10 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"request_log_image_redact": true,
 		},
 		"recommended_models": map[string]any{
-			"default":     "MiniMax-M2.7",
-			"agent_tools": []string{"MiniMax-M2.7", "Kimi-K2.6", "Qwen3-Coder", "Qwen3.6-Plus"},
+			"default":     "kmodel",
+			"agent_tools": []string{"kmodel", "MiniMax-M2.7", "Qwen3-Coder", "Qwen3.6-Plus"},
 			"vision":      []string{"Kimi-K2.6", "Qwen3-Max", "Qwen3.6-Plus", "MiniMax-M2.7", "Auto"},
-			"coding":      []string{"MiniMax-M2.7", "Qwen3-Coder", "Kimi-K2.6"},
+			"coding":      []string{"kmodel", "Qwen3-Coder", "MiniMax-M2.7"},
 		},
 		"model_metadata": map[string]any{
 			"Kimi-K2.6": map[string]any{
@@ -418,7 +418,7 @@ func (s *Server) handleModelProps(w http.ResponseWriter, r *http.Request) {
 
 	model := strings.TrimSpace(s.svc.DefaultModel())
 	if model == "" {
-		model = "MiniMax-M2.7"
+		model = "kmodel"
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"model_alias":   model,

@@ -35,6 +35,12 @@ let clockInterval = null
 
 const endpoint = computed(() => (status.value.addr ? `http://${status.value.addr}` : '未启动'))
 const isRunning = computed(() => Boolean(status.value.running))
+const isRemoteBackend = computed(() => status.value.backend === 'remote' || config.value.Backend === 'remote' || health.value?.state?.transport === 'remote')
+const transportLabel = computed(() => {
+  if (isRemoteBackend.value) return 'Remote API'
+  return health.value?.state?.transport || config.value.Transport || 'auto'
+})
+const sessionLabel = computed(() => health.value?.state?.session_mode || config.value.SessionMode || 'auto')
 const runningDuration = computed(() => {
   if (!isRunning.value || !status.value.startedAt) return '未运行'
   const startedAt = new Date(status.value.startedAt).getTime()
@@ -228,11 +234,11 @@ onUnmounted(() => {
       </div>
       <div class="strip-cell">
         <label>Transport</label>
-        <strong>{{ health?.state?.transport || 'WebSocket' }}</strong>
+        <strong>{{ transportLabel }}</strong>
       </div>
       <div class="strip-cell">
         <label>Session</label>
-        <strong>{{ health?.state?.session_mode || 'Reuse' }}</strong>
+        <strong>{{ sessionLabel }}</strong>
       </div>
       <div class="strip-actions">
         <button :class="{ active: !isRunning }" type="button" :disabled="loading || isRunning" @click="toggleProxy">启动</button>
@@ -322,7 +328,7 @@ onUnmounted(() => {
         <div class="setting-row">
           <div>
             <div class="cell-main">Transport</div>
-            <div class="cell-sub">{{ config.Transport || 'WebSocket' }}</div>
+            <div class="cell-sub">{{ transportLabel }}</div>
           </div>
           <span class="status-chip ok"><i class="bi bi-check"></i></span>
         </div>
@@ -383,10 +389,10 @@ onUnmounted(() => {
               <td>{{ request.time }}</td>
               <td>{{ request.method }}</td>
               <td>{{ request.path }}</td>
-              <td>{{ request.model || status.model || 'MiniMax-M2.7' }}</td>
+              <td>{{ request.model || '-' }}</td>
               <td><span class="status-chip" :class="statusClass(request.statusCode)">{{ request.statusCode }}</span></td>
               <td>{{ request.duration }}</td>
-              <td>{{ request.size || '2.1 KB' }}</td>
+              <td>{{ request.size || '-' }}</td>
             </tr>
           </tbody>
         </table>

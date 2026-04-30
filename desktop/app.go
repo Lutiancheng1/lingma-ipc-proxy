@@ -28,8 +28,10 @@ type RequestRecord struct {
 	Time       string `json:"time"`
 	Method     string `json:"method"`
 	Path       string `json:"path"`
+	Model      string `json:"model,omitempty"`
 	StatusCode int    `json:"statusCode"`
 	Duration   string `json:"duration"`
+	Size       string `json:"size,omitempty"`
 	ReqBody    string `json:"reqBody,omitempty"`
 	RespBody   string `json:"respBody,omitempty"`
 }
@@ -385,8 +387,10 @@ func (a *App) StartProxy() error {
 			Time:       time.Now().Format("15:04:05"),
 			Method:     method,
 			Path:       path,
+			Model:      extractRequestModel(reqBody),
 			StatusCode: statusCode,
 			Duration:   duration.Round(time.Millisecond).String(),
+			Size:       formatPayloadSize(len(reqBody) + len(respBody)),
 			ReqBody:    reqBody,
 			RespBody:   respBody,
 		})
@@ -581,15 +585,44 @@ func (a *App) fetchModels(addr string) ([]ModelInfo, error) {
 	return models, nil
 }
 
+func extractRequestModel(reqBody string) string {
+	if strings.TrimSpace(reqBody) == "" {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(reqBody), &payload); err != nil {
+		return ""
+	}
+	if model, ok := payload["model"].(string); ok {
+		return strings.TrimSpace(model)
+	}
+	return ""
+}
+
+func formatPayloadSize(bytes int) string {
+	if bytes <= 0 {
+		return "-"
+	}
+	const kb = 1024
+	const mb = 1024 * kb
+	if bytes >= mb {
+		return fmt.Sprintf("%.1f MB", float64(bytes)/float64(mb))
+	}
+	if bytes >= kb {
+		return fmt.Sprintf("%.1f KB", float64(bytes)/float64(kb))
+	}
+	return fmt.Sprintf("%d B", bytes)
+}
+
 func defaultConfig() service.Config {
 	cfg := service.Config{
 		Host:        "127.0.0.1",
 		Port:        8095,
-		Backend:     service.BackendIPC,
+		Backend:     service.BackendRemote,
 		Transport:   lingmaipc.TransportAuto,
 		Cwd:         defaultCwd(),
 		Mode:        "agent",
-		Model:       "MiniMax-M2.7",
+		Model:       "kmodel",
 		ShellType:   defaultShellType(),
 		SessionMode: service.SessionModeAuto,
 		Timeout:     120 * time.Second,

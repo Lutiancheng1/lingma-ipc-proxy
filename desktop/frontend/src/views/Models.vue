@@ -88,7 +88,7 @@ onMounted(refresh)
       <div class="panel-header">
         <div>
           <h2>可用模型</h2>
-          <p>推荐 OpenClaw / Hermes / Claude Code / Cline 优先选择 MiniMax-M2.7。</p>
+          <p>远端 API 模式推荐 Kimi-K2.6；MiniMax-M2.7 可作为速度优先备选。</p>
         </div>
         <input v-model="query" class="search-input" type="search" placeholder="搜索模型" style="max-width: 260px" />
       </div>

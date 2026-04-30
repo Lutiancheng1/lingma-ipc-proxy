@@ -172,8 +172,9 @@ func New(cfg Config) *Service {
 		cfg.Transport = lingmaipc.TransportAuto
 	}
 	if cfg.Backend == "" {
-		cfg.Backend = BackendIPC
+		cfg.Backend = BackendRemote
 	}
+	cfg.Model = normalizeModelForBackend(cfg.Backend, cfg.Model)
 	if cfg.SessionMode == "" {
 		cfg.SessionMode = SessionModeAuto
 	}
@@ -183,7 +184,7 @@ func New(cfg Config) *Service {
 func (s *Service) SetDefaultModel(model string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.cfg.Model = strings.TrimSpace(model)
+	s.cfg.Model = normalizeModelForBackend(s.cfg.Backend, model)
 }
 
 func (s *Service) DefaultModel() string {
@@ -233,9 +234,8 @@ func (s *Service) ListModels(ctx context.Context) ([]Model, error) {
 		if err != nil {
 			return nil, err
 		}
-		out := make([]Model, 0, len(models)+1)
-		seen := map[string]bool{"Auto": true}
-		out = append(out, Model{ID: "Auto", Name: "Auto"})
+		out := make([]Model, 0, len(models))
+		seen := map[string]bool{}
 		for _, model := range models {
 			id := strings.TrimSpace(model.Key)
 			if id == "" || seen[id] {
@@ -337,6 +337,7 @@ func (s *Service) generateRemote(
 	if strings.TrimSpace(req.Model) == "" {
 		req.Model = s.DefaultModel()
 	}
+	req.Model = normalizeModelForBackend(BackendRemote, req.Model)
 	prompt, err := buildLingmaPrompt(req, SessionModeFresh)
 	if err != nil {
 		return nil, err
@@ -1182,4 +1183,31 @@ func valueOr(value string, fallback string) string {
 		return strings.TrimSpace(value)
 	}
 	return fallback
+}
+
+func normalizeModelForBackend(backend BackendMode, model string) string {
+	model = strings.TrimSpace(model)
+	if backend != BackendRemote {
+		return model
+	}
+	switch strings.ToLower(model) {
+	case "":
+		return ""
+	case "kimi-k2.6":
+		return "kmodel"
+	case "minimax-m2.7":
+		return "mmodel"
+	case "qwen3-coder":
+		return "dashscope_qwen3_coder"
+	case "qwen3-max":
+		return "dashscope_qwen_max_latest"
+	case "qwen3-thinking":
+		return "dashscope_qwen_plus_20250428_thinking"
+	case "qwen3.6-plus":
+		return "dashscope_qmodel"
+	case "auto":
+		return "org_auto"
+	default:
+		return model
+	}
 }

@@ -1,8 +1,10 @@
 {
   "host": "127.0.0.1",
   "port": 8095,
+  "backend": "remote",
   "transport": "websocket",
   "mode": "agent",
+  "model": "kmodel",
   "shell_type": "zsh",
   "session_mode": "auto",
   "timeout": 120,

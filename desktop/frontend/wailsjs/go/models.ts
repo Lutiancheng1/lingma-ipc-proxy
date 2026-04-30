@@ -82,8 +82,10 @@ export namespace main {
 	    time: string;
 	    method: string;
 	    path: string;
+	    model?: string;
 	    statusCode: number;
 	    duration: string;
+	    size?: string;
 	    reqBody?: string;
 	    respBody?: string;
 
@@ -96,8 +98,10 @@ export namespace main {
 	        this.time = source["time"];
 	        this.method = source["method"];
 	        this.path = source["path"];
+	        this.model = source["model"];
 	        this.statusCode = source["statusCode"];
 	        this.duration = source["duration"];
+	        this.size = source["size"];
 	        this.reqBody = source["reqBody"];
 	        this.respBody = source["respBody"];
 	    }

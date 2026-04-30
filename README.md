@@ -8,12 +8,14 @@ The project is designed for tools such as Claude Code, Cline, Continue, OpenCode
 
 The proxy now supports two backend modes:
 
-- **IPC plugin mode (default)**: connects to the local Lingma IDE plugin over WebSocket / Named Pipe. This is the safest daily mode and keeps behavior closest to the IDE plugin.
-- **Remote API mode (experimental)**: imports the local Lingma login cache or an explicit credential file and calls Lingma remote APIs directly. This can feel more like an official API and does not depend on an IDE IPC session, but it relies on non-public login and signing details that may change.
+- **Remote API mode (default, experimental)**: imports the local Lingma login cache or an explicit credential file and calls Lingma remote APIs directly. This feels more like an official API, does not depend on an IDE IPC session, and is currently the recommended mode for Claude Code / Hermes style agents.
+- **IPC plugin mode**: connects to the local Lingma IDE plugin over WebSocket / Named Pipe. This keeps behavior closest to the IDE plugin and is useful as a compatibility fallback.
 
 ## Current Version
 
-The current desktop line is `v1.4.1`.
+The current desktop line is `v1.4.2`.
+
+See [CHANGELOG.md](./CHANGELOG.md) for release history.
 
 Release builds are produced by GitHub Actions for:
 
@@ -169,17 +171,7 @@ lingma-ipc-proxy --transport pipe --pipe '\\.\pipe\lingma-ipc'
 
 ## Backend Modes
 
-### IPC Plugin Mode (Default)
-
-IPC mode talks to the local Lingma IDE plugin:
-
-```bash
-lingma-ipc-proxy --backend ipc --transport auto --port 8095
-```
-
-Use this when VS Code / the Lingma plugin is already running, when you want plugin session behavior, or when you want the model list exposed by the local plugin.
-
-### Remote API Mode (Experimental)
+### Remote API Mode (Default, Experimental)
 
 Remote mode calls Lingma's remote API directly:
 
@@ -231,6 +223,16 @@ Notes:
 - Local validation passed `/health`, `/v1/models`, OpenAI streaming/non-streaming chat, and Claude Code Anthropic + Bash tool use. Claude Code full tool runs are much slower than simple OpenAI requests because the client sends a large context and performs a second tool-result turn.
 - This mode is inspired by the remote API and credential-signing research in [ZipperCode/lingma2api](https://github.com/ZipperCode/lingma2api), integrated here as a switchable backend under the existing OpenAI / Anthropic / desktop app architecture.
 
+### IPC Plugin Mode
+
+IPC mode talks to the local Lingma IDE plugin:
+
+```bash
+lingma-ipc-proxy --backend ipc --transport auto --port 8095
+```
+
+Use this when VS Code / the Lingma plugin is already running, when you want plugin session behavior, or when you want the model list exposed by the local plugin.
+
 ## Quick Start
 
 ### Desktop App
@@ -270,7 +272,7 @@ export ANTHROPIC_API_KEY="any"
 Then select a model in Claude Code:
 
 ```text
-/model MiniMax-M2.7
+/model kmodel
 ```
 
 ### Cline
@@ -278,7 +280,7 @@ Then select a model in Claude Code:
 - Provider: `OpenAI Compatible`
 - Base URL: `http://127.0.0.1:8095/v1`
 - API Key: `any`
-- Model ID: `MiniMax-M2.7`
+- Model ID: `kmodel`
 
 ### Continue
 
@@ -288,7 +290,7 @@ Then select a model in Claude Code:
     {
       "title": "Lingma Proxy",
       "provider": "openai",
-      "model": "MiniMax-M2.7",
+      "model": "kmodel",
       "apiKey": "any",
       "apiBase": "http://127.0.0.1:8095/v1"
     }
@@ -316,13 +318,13 @@ The proxy only reports models actually exposed by your Lingma plugin. The table 
 
 | Model | Best use | Context / capability basis |
 | --- | --- | --- |
-| `MiniMax-M2.7` | Default recommendation for third-party agents | NVIDIA's [MiniMax M2.7 model card](https://developer.nvidia.com/blog/minimax-m2-7-advances-scalable-agentic-workflows-on-nvidia-platforms-for-complex-ai-applications/) describes a language MoE model with 200K input context and agentic use cases; local proxy testing passed read/search/terminal/web/patch/vision smoke tests. |
-| `Kimi-K2.6` | Multimodal and long-context agent work | Kimi's [official API docs](https://platform.kimi.ai/docs/guide/kimi-k2-6-quickstart) describe native text/image/video input, a 256K context window, and multi-step tool invocation support. |
+| `Kimi-K2.6` (`kmodel` in remote mode) | Default recommendation for remote API mode and third-party agents | Kimi's [official API docs](https://platform.kimi.ai/docs/guide/kimi-k2-6-quickstart) describe native text/image/video input, a 256K context window, and multi-step tool invocation support. Local Claude Code testing showed cleaner native tool execution in remote mode. |
+| `MiniMax-M2.7` (`mmodel` in remote mode) | Fast fallback | NVIDIA's [MiniMax M2.7 model card](https://developer.nvidia.com/blog/minimax-m2-7-advances-scalable-agentic-workflows-on-nvidia-platforms-for-complex-ai-applications/) describes a language MoE model with 200K input context and agentic use cases; local proxy testing passed read/search/terminal/web/patch/vision smoke tests and was fast in previous runs. |
 | `Qwen3-Coder` | Code-specialized fallback | Qwen's [official blog](https://qwenlm.github.io/blog/qwen3-coder/) describes 256K native context, up to 1M with extrapolation, and agentic coding/tool protocols. |
 | `Qwen3.6-Plus` | General/vision fallback | Exposed by Lingma and passed local smoke tests, but this repository does not have an official Lingma-specific context-length source for it. |
 | `Qwen3-Max` | Fast general/vision model | Exposed by Lingma and strong in simple tests, but less stable on forced edit/read tool calls in this proxy. |
 
-Default model when the client omits `model`: `MiniMax-M2.7`.
+Default model when the client omits `model`: `kmodel` (`Kimi-K2.6` in the remote model list).
 
 ## Configuration
 
@@ -393,7 +395,7 @@ Current proxy hardening includes:
 - common tool alias normalization such as `Bash` -> `terminal`, `Read` -> `read_file`, `Grep` -> `search_files`, and `Edit` -> `patch`
 - Anthropic `stream=true` requests with tools are resolved internally before streaming the final `tool_use` blocks, which avoids sending premature "please run this command yourself" text to clients such as Claude Code.
 
-In local smoke tests after this hardening, `MiniMax-M2.7`, `Kimi-K2.6`, `Qwen3.6-Plus`, and `Qwen3-Coder` all completed read/search/terminal/web/patch/vision checks, with `MiniMax-M2.7` having the lowest average latency in the tested set.
+In local smoke tests after this hardening, `MiniMax-M2.7`, `Kimi-K2.6`, `Qwen3.6-Plus`, and `Qwen3-Coder` all completed read/search/terminal/web/patch/vision checks. Remote API mode with `kmodel` is now the default because it avoids Lingma IDE IPC session limits and behaved better with Claude Code and Hermes-style local tools.
 
 ## Request And Log Inspection
 
