@@ -15,6 +15,7 @@ import (
 
 	"lingma-ipc-proxy/internal/httpapi"
 	"lingma-ipc-proxy/internal/lingmaipc"
+	"lingma-ipc-proxy/internal/remote"
 	"lingma-ipc-proxy/internal/service"
 
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -58,9 +59,30 @@ type ModelInfo struct {
 type ProxyStatus struct {
 	Running   bool   `json:"running"`
 	Addr      string `json:"addr"`
+	Backend   string `json:"backend"`
 	Models    int    `json:"models"`
 	Model     string `json:"model,omitempty"`
 	StartedAt string `json:"startedAt,omitempty"`
+}
+
+// DetectionInfo exposes non-sensitive resolved connection details for the UI.
+type DetectionInfo struct {
+	ListenURL               string `json:"listenUrl"`
+	Backend                 string `json:"backend"`
+	BackendLabel            string `json:"backendLabel"`
+	IPCSuccess              bool   `json:"ipcSuccess"`
+	IPCTransport            string `json:"ipcTransport,omitempty"`
+	IPCEndpoint             string `json:"ipcEndpoint,omitempty"`
+	IPCError                string `json:"ipcError,omitempty"`
+	RemoteBaseURL           string `json:"remoteBaseUrl"`
+	RemoteBaseURLSource     string `json:"remoteBaseUrlSource,omitempty"`
+	RemoteCredentialSuccess bool   `json:"remoteCredentialSuccess"`
+	RemoteCredentialSource  string `json:"remoteCredentialSource,omitempty"`
+	RemoteUserID            string `json:"remoteUserId,omitempty"`
+	RemoteMachineID         string `json:"remoteMachineId,omitempty"`
+	RemoteTokenExpireAt     string `json:"remoteTokenExpireAt,omitempty"`
+	RemoteTokenExpired      bool   `json:"remoteTokenExpired"`
+	RemoteCredentialError   string `json:"remoteCredentialError,omitempty"`
 }
 
 // NewApp creates a new App application struct
@@ -201,6 +223,7 @@ func (a *App) GetStatus() ProxyStatus {
 	return ProxyStatus{
 		Running:   a.running,
 		Addr:      a.addr,
+		Backend:   string(a.cfg.Backend),
 		Models:    len(a.models),
 		Model:     a.cfg.Model,
 		StartedAt: startedAt,
@@ -215,6 +238,54 @@ func (a *App) GetConfig() service.Config {
 	a.mu.RUnlock()
 	cfg.Timeout = cfg.Timeout / time.Second
 	return cfg
+}
+
+// GetDetectionInfo returns resolved IPC/remote details without exposing tokens.
+func (a *App) GetDetectionInfo() DetectionInfo {
+	a.mu.RLock()
+	cfg := a.cfg
+	addr := a.addr
+	a.mu.RUnlock()
+
+	if strings.TrimSpace(addr) == "" {
+		addr = fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
+	}
+	baseURL := remote.ResolveBaseURLWithSource(cfg.RemoteBaseURL)
+	info := DetectionInfo{
+		ListenURL:           "http://" + addr,
+		Backend:             string(cfg.Backend),
+		BackendLabel:        backendLabel(cfg.Backend),
+		RemoteBaseURL:       baseURL.URL,
+		RemoteBaseURLSource: baseURL.Source,
+	}
+
+	if opts, err := lingmaipc.ResolveDialOptions(cfg.Transport, cfg.Pipe, cfg.WebSocketURL); err == nil {
+		info.IPCSuccess = true
+		info.IPCTransport = string(opts.Transport)
+		switch opts.Transport {
+		case lingmaipc.TransportPipe:
+			info.IPCEndpoint = opts.PipePath
+		case lingmaipc.TransportWebSocket:
+			info.IPCEndpoint = opts.WebSocketURL
+		}
+	} else {
+		info.IPCError = err.Error()
+	}
+
+	if cred, err := remote.LoadCredential(cfg.RemoteAuthFile); err == nil {
+		info.RemoteCredentialSuccess = true
+		info.RemoteCredentialSource = cred.Source
+		info.RemoteUserID = maskIdentifier(cred.UserID)
+		info.RemoteMachineID = maskIdentifier(cred.MachineID)
+		info.RemoteTokenExpired = remote.IsExpired(cred, 0)
+		if cred.TokenExpireTime > 0 {
+			info.RemoteTokenExpireAt = time.UnixMilli(cred.TokenExpireTime).Format(time.RFC3339)
+		}
+	} else {
+		info.RemoteCredentialError = err.Error()
+	}
+
+	return info
 }
 
 // UpdateConfig updates the configuration, saves to file, and restarts the proxy if running.
@@ -605,6 +676,27 @@ func defaultConfig() service.Config {
 	}
 
 	return cfg
+}
+
+func backendLabel(backend service.BackendMode) string {
+	switch backend {
+	case service.BackendRemote:
+		return "远端 API"
+	default:
+		return "IPC 插件"
+	}
+}
+
+func maskIdentifier(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= 8 {
+		return string(runes[:1]) + "***"
+	}
+	return string(runes[:4]) + "..." + string(runes[len(runes)-4:])
 }
 
 func configSearchPaths() []string {

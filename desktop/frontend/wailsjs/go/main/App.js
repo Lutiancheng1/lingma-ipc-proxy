@@ -14,6 +14,10 @@ export function GetConfig() {
   return window['go']['main']['App']['GetConfig']();
 }
 
+export function GetDetectionInfo() {
+  return window['go']['main']['App']['GetDetectionInfo']();
+}
+
 export function GetModels() {
   return window['go']['main']['App']['GetModels']();
 }

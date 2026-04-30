@@ -9,6 +9,8 @@ export function ClearRequests():Promise<void>;
 
 export function GetConfig():Promise<service.Config>;
 
+export function GetDetectionInfo():Promise<main.DetectionInfo>;
+
 export function GetModels():Promise<Array<main.ModelInfo>>;
 
 export function GetRequests():Promise<Array<main.RequestRecord>>;

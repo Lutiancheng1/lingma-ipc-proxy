@@ -1,5 +1,47 @@
 export namespace main {
 
+	export class DetectionInfo {
+	    listenUrl: string;
+	    backend: string;
+	    backendLabel: string;
+	    ipcSuccess: boolean;
+	    ipcTransport?: string;
+	    ipcEndpoint?: string;
+	    ipcError?: string;
+	    remoteBaseUrl: string;
+	    remoteBaseUrlSource?: string;
+	    remoteCredentialSuccess: boolean;
+	    remoteCredentialSource?: string;
+	    remoteUserId?: string;
+	    remoteMachineId?: string;
+	    remoteTokenExpireAt?: string;
+	    remoteTokenExpired: boolean;
+	    remoteCredentialError?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new DetectionInfo(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.listenUrl = source["listenUrl"];
+	        this.backend = source["backend"];
+	        this.backendLabel = source["backendLabel"];
+	        this.ipcSuccess = source["ipcSuccess"];
+	        this.ipcTransport = source["ipcTransport"];
+	        this.ipcEndpoint = source["ipcEndpoint"];
+	        this.ipcError = source["ipcError"];
+	        this.remoteBaseUrl = source["remoteBaseUrl"];
+	        this.remoteBaseUrlSource = source["remoteBaseUrlSource"];
+	        this.remoteCredentialSuccess = source["remoteCredentialSuccess"];
+	        this.remoteCredentialSource = source["remoteCredentialSource"];
+	        this.remoteUserId = source["remoteUserId"];
+	        this.remoteMachineId = source["remoteMachineId"];
+	        this.remoteTokenExpireAt = source["remoteTokenExpireAt"];
+	        this.remoteTokenExpired = source["remoteTokenExpired"];
+	        this.remoteCredentialError = source["remoteCredentialError"];
+	    }
+	}
 	export class ModelInfo {
 	    id: string;
 	    name: string;
@@ -17,6 +59,7 @@ export namespace main {
 	export class ProxyStatus {
 	    running: boolean;
 	    addr: string;
+	    backend: string;
 	    models: number;
 	    model?: string;
 	    startedAt?: string;
@@ -29,6 +72,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.running = source["running"];
 	        this.addr = source["addr"];
+	        this.backend = source["backend"];
 	        this.models = source["models"];
 	        this.model = source["model"];
 	        this.startedAt = source["startedAt"];

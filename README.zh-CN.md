@@ -1,8 +1,8 @@
-# Lingma IPC Proxy
+# Lingma Proxy
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
-**Lingma IPC Proxy** 是一个通义灵码 IDE 插件 API 适配层。它把 Lingma 插件的本地私有 IPC / WebSocket 能力转换成标准 **OpenAI 兼容接口** 和 **Anthropic 兼容接口**，让 Claude Code、Cline、Continue、OpenCode、自研 Agent 等第三方客户端可以直接调用 Lingma 后端模型。
+**Lingma Proxy** 是一个通义灵码 API 适配层。它既可以把 Lingma 插件的本地私有 IPC / WebSocket 能力转换成标准 **OpenAI 兼容接口** 和 **Anthropic 兼容接口**，也可以使用实验性的远端 API 模式直接调用 Lingma 远端接口，让 Claude Code、Cline、Continue、OpenCode、自研 Agent 等第三方客户端可以直接调用 Lingma 后端模型。
 
 项目同时提供两种使用方式：
 
@@ -16,7 +16,7 @@
 
 ## 当前版本
 
-当前桌面端版本线：`v1.4.0`
+当前桌面端版本线：`v1.4.1`
 
 GitHub Actions 会在 Release 中产出：
 
@@ -216,9 +216,9 @@ flowchart LR
 
 | 平台 | 优先传输 | 探测方式 |
 | --- | --- | --- |
-| macOS | WebSocket | 扫描用户目录下 Lingma `SharedClientCache` 配置 |
-| Windows | Named Pipe / WebSocket | 扫描 Lingma 命名管道和共享缓存信息 |
-| Linux | WebSocket | 建议手动指定 `--ws-url` |
+| macOS | WebSocket | 扫描 Lingma `SharedClientCache`、`~/.lingma` 等用户目录 |
+| Windows | Named Pipe / WebSocket | 扫描 Lingma 命名管道，以及 `%APPDATA%`、`%LOCALAPPDATA%`、`%ProgramData%`、`%USERPROFILE%\.lingma` 下的共享缓存信息 |
+| Linux | WebSocket | 尝试读取 `~/.lingma` / XDG 目录，仍建议必要时手动指定 `--ws-url` |
 
 如果自动探测失败，桌面端会提供兜底说明。可以在设置里手动填写：
 
@@ -259,6 +259,9 @@ lingma-ipc-proxy --backend remote --port 8095
 ~/.lingma/cache/user
 ~/.lingma/cache/id
 ~/.lingma/logs/lingma.log
+%APPDATA%\Lingma\cache\user
+%LOCALAPPDATA%\Lingma\cache\user
+存在时也会尝试 XDG 配置 / 状态目录
 ```
 
 也可以指定显式凭据文件：
@@ -288,7 +291,8 @@ lingma-ipc-proxy \
 说明：
 
 - 远端模式不会写入或迁移你的登录态，只会读取本机 Lingma 缓存或你指定的凭据文件。
-- 如果 Lingma 插件配置过专属域名，可以通过 `--remote-base-url`、`LINGMA_REMOTE_BASE_URL` 或配置文件显式指定。
+- 如果 Lingma 插件配置过专属域名，远端模式会优先使用 `--remote-base-url`、`LINGMA_REMOTE_BASE_URL` 或配置文件；这些为空时，会扫描 macOS、Windows、Linux 上 Lingma 本地日志里的 `endpoint config:`、Marketplace service URL 等线索。
+- 桌面端设置页会展示当前解析到的远端域名和来源，但不会展示 token / key 明文。
 - 远端模式的 `/v1/models` 返回的是远端接口模型 key，不一定等同于 IPC 插件模式里看到的 `MiniMax-M2.7`、`Kimi-K2.6` 等展示名。
 - 当前本机实测：`/health`、`/v1/models`、OpenAI 流式 / 非流式、Claude Code Anthropic + Bash 工具调用均可用；Claude Code 完整工具链耗时明显高于简单 OpenAI 请求。
 - 该模式参考了 [ZipperCode/lingma2api](https://github.com/ZipperCode/lingma2api) 对 Lingma 远端接口、签名和登录态结构的探索，本仓库将其作为可切换后端集成到现有 OpenAI / Anthropic / 桌面 App 架构中。

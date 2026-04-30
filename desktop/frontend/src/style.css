@@ -1266,6 +1266,83 @@ button:disabled {
   font-size: 12px;
 }
 
+.detect-card {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.54);
+}
+
+:root[data-theme="dark"] .detect-card {
+  background: rgba(15, 23, 42, 0.52);
+}
+
+.detect-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.detect-title strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.detect-title button {
+  min-height: 28px;
+  padding: 0 10px;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-strong);
+  cursor: pointer;
+}
+
+.detect-card dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.detect-card dl > div {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.detect-card dt {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.detect-card dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.muted-inline {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.warn-text {
+  color: var(--danger-text) !important;
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -194,28 +194,66 @@ func resolveSharedClientInfo() (sharedClientInfo, error) {
 }
 
 func defaultSharedClientInfoPaths() []string {
-	bases := make([]string, 0, 2)
-	if appData := strings.TrimSpace(os.Getenv("APPDATA")); appData != "" {
-		bases = append(bases, appData)
+	if explicit := strings.TrimSpace(os.Getenv("LINGMA_SHARED_CLIENT_INFO")); explicit != "" {
+		return []string{explicit}
 	}
+
+	bases := make([]string, 0, 8)
 	if userConfigDir, err := os.UserConfigDir(); err == nil && strings.TrimSpace(userConfigDir) != "" {
 		bases = append(bases, userConfigDir)
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		bases = append(bases,
+			filepath.Join(home, ".lingma", "vscode"),
+			filepath.Join(home, ".lingma"),
+		)
+	}
+	for _, envName := range []string{"APPDATA", "LOCALAPPDATA", "ProgramData"} {
+		if value := strings.TrimSpace(os.Getenv(envName)); value != "" {
+			bases = append(bases, value)
+		}
 	}
 
 	seen := make(map[string]struct{})
 	paths := make([]string, 0, len(bases)*2)
-	for _, base := range bases {
-		cacheDir := filepath.Join(base, "Lingma", "SharedClientCache")
-		for _, name := range []string{".info.json", ".info"} {
-			path := filepath.Join(cacheDir, name)
-			if _, ok := seen[path]; ok {
-				continue
+	for _, base := range uniquePathStrings(bases) {
+		cacheDirs := []string{
+			filepath.Join(base, "Lingma", "SharedClientCache"),
+			filepath.Join(base, "Lingma", "sharedClientCache"),
+			filepath.Join(base, "SharedClientCache"),
+			filepath.Join(base, "sharedClientCache"),
+		}
+		for _, cacheDir := range cacheDirs {
+			for _, name := range []string{".info.json", ".info"} {
+				path := filepath.Join(cacheDir, name)
+				if _, ok := seen[path]; ok {
+					continue
+				}
+				seen[path] = struct{}{}
+				paths = append(paths, path)
 			}
-			seen[path] = struct{}{}
-			paths = append(paths, path)
 		}
 	}
 	return paths
+}
+
+func uniquePathStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		cleaned := filepath.Clean(value)
+		key := strings.ToLower(cleaned)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, cleaned)
+	}
+	return out
 }
 
 func resolveSharedClientInfoFromPaths(paths []string) (sharedClientInfo, error) {

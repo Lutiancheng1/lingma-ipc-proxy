@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +35,11 @@ type Config struct {
 type Client struct {
 	cfg    Config
 	client *http.Client
+}
+
+type BaseURLHint struct {
+	URL    string
+	Source string
 }
 
 type Model struct {
@@ -76,18 +83,22 @@ func New(cfg Config) *Client {
 }
 
 func ResolveBaseURL(explicit string) string {
+	return ResolveBaseURLWithSource(explicit).URL
+}
+
+func ResolveBaseURLWithSource(explicit string) BaseURLHint {
 	if strings.TrimSpace(explicit) != "" {
-		return strings.TrimRight(strings.TrimSpace(explicit), "/")
+		return BaseURLHint{URL: strings.TrimRight(strings.TrimSpace(explicit), "/"), Source: "explicit config"}
 	}
 	if value := strings.TrimSpace(os.Getenv("LINGMA_REMOTE_BASE_URL")); value != "" {
-		return strings.TrimRight(value, "/")
+		return BaseURLHint{URL: strings.TrimRight(value, "/"), Source: "LINGMA_REMOTE_BASE_URL"}
 	}
 	for _, path := range candidateConfigFiles() {
 		if value := readBaseURLHint(path); value != "" {
-			return strings.TrimRight(value, "/")
+			return BaseURLHint{URL: strings.TrimRight(value, "/"), Source: path}
 		}
 	}
-	return DefaultBaseURL
+	return BaseURLHint{URL: DefaultBaseURL, Source: "default"}
 }
 
 func (c *Client) Warmup(ctx context.Context) error {
@@ -292,7 +303,7 @@ func (c *Client) headers(cred Credential, path string, body string) (map[string]
 		"Cosy-User":         cred.UserID,
 		"Cosy-Clientip":     "198.18.0.1",
 		"Cosy-Clienttype":   "2",
-		"Cosy-Machineos":    "x86_64_windows",
+		"Cosy-Machineos":    MachineOSHeader(),
 		"Cosy-Machinetoken": "",
 		"Cosy-Machinetype":  "",
 		"Cosy-Version":      c.cfg.CosyVersion,
@@ -381,12 +392,20 @@ func candidateConfigFiles() []string {
 	if err != nil {
 		return nil
 	}
-	return []string{
+	paths := []string{
 		filepath.Join(home, ".lingma", "extension", "server", "config.json"),
 		filepath.Join(home, ".lingma", "extension", "local", "config.json"),
 		filepath.Join(home, ".lingma", "bin", "config.json"),
 		filepath.Join(home, ".config", "lingma-ipc-proxy", "config.json"),
+		filepath.Join(home, ".lingma", "logs", "lingma.log"),
+		filepath.Join(home, ".lingma", "logs", "lingma-extension.log"),
+		filepath.Join(home, ".lingma", "vscode", "sharedClientCache", "logs", "lingma.log"),
+		filepath.Join(home, ".lingma", "vscode", "sharedClientCache", "logs", "lingma-extension.log"),
 	}
+	for _, root := range lingmaLogRoots(home) {
+		paths = append(paths, recentLingmaAppLogs(root)...)
+	}
+	return paths
 }
 
 func readBaseURLHint(path string) string {
@@ -396,13 +415,12 @@ func readBaseURLHint(path string) string {
 	}
 	var value any
 	if err := json.Unmarshal(body, &value); err != nil {
-		text := string(body)
-		if strings.Contains(text, "lingma.alibabacloud.com") {
-			return DefaultBaseURL
-		}
-		return ""
+		return extractBaseURLFromText(string(body))
 	}
-	return findBaseURL(value)
+	if value := findBaseURL(value); value != "" {
+		return value
+	}
+	return extractBaseURLFromText(string(body))
 }
 
 func findBaseURL(value any) string {
@@ -427,6 +445,146 @@ func findBaseURL(value any) string {
 		}
 	}
 	return ""
+}
+
+func lingmaLogRoots(home string) []string {
+	roots := []string{
+		filepath.Join(home, ".lingma", "logs"),
+		filepath.Join(home, ".lingma", "vscode", "sharedClientCache", "logs"),
+		filepath.Join(home, "Library", "Application Support", "Lingma", "logs"),
+	}
+	for _, envName := range []string{"APPDATA", "LOCALAPPDATA", "ProgramData"} {
+		if value := strings.TrimSpace(os.Getenv(envName)); value != "" {
+			roots = append(roots,
+				filepath.Join(value, "Lingma", "logs"),
+				filepath.Join(value, "Code", "User", "globalStorage", "alibaba-cloud.tongyi-lingma", "logs"),
+			)
+		}
+	}
+	if value := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); value != "" {
+		roots = append(roots, filepath.Join(value, "Lingma", "logs"))
+	}
+	if value := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); value != "" {
+		roots = append(roots, filepath.Join(value, "Lingma", "logs"))
+	}
+	roots = append(roots,
+		filepath.Join(home, ".config", "Lingma", "logs"),
+		filepath.Join(home, ".local", "state", "Lingma", "logs"),
+	)
+	return uniqueStrings(roots)
+}
+
+func recentLingmaAppLogs(root string) []string {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	type logDir struct {
+		path    string
+		modTime int64
+	}
+	dirs := make([]logDir, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		dirs = append(dirs, logDir{path: filepath.Join(root, entry.Name()), modTime: info.ModTime().UnixNano()})
+	}
+	sort.Slice(dirs, func(i, j int) bool { return dirs[i].modTime > dirs[j].modTime })
+	if len(dirs) > 5 {
+		dirs = dirs[:5]
+	}
+	paths := make([]string, 0, len(dirs)*4)
+	for _, dir := range dirs {
+		_ = filepath.WalkDir(dir.path, func(path string, entry os.DirEntry, err error) error {
+			if err != nil || entry.IsDir() {
+				return nil
+			}
+			name := entry.Name()
+			lowerName := strings.ToLower(name)
+			if lowerName == "renderer.log" ||
+				lowerName == "sharedprocess.log" ||
+				lowerName == "main.log" ||
+				strings.HasSuffix(name, "Lingma.log") ||
+				strings.Contains(lowerName, "lingma") && strings.HasSuffix(lowerName, ".log") {
+				paths = append(paths, path)
+			}
+			return nil
+		})
+	}
+	return paths
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func extractBaseURLFromText(text string) string {
+	for _, marker := range []string{
+		"endpoint config:",
+		"Using service url:",
+		"Download asset from:",
+		"https://ai-lingma",
+		"https://lingma",
+	} {
+		if value := extractBaseURLAfterMarker(text, marker); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func extractBaseURLAfterMarker(text, marker string) string {
+	lowerText := strings.ToLower(text)
+	lowerMarker := strings.ToLower(marker)
+	index := strings.LastIndex(lowerText, lowerMarker)
+	if index < 0 {
+		return ""
+	}
+	tail := text[index+len(marker):]
+	if strings.HasPrefix(lowerMarker, "https://") {
+		tail = marker + tail
+	}
+	for _, field := range strings.Fields(tail) {
+		field = strings.Trim(field, `"'<>),]}`)
+		if value := normalizeRemoteBaseURLHint(field); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func normalizeRemoteBaseURLHint(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	host := strings.ToLower(parsed.Host)
+	if !strings.Contains(host, "lingma") && !strings.Contains(host, "rdc.aliyuncs.com") {
+		return ""
+	}
+	return parsed.Scheme + "://" + parsed.Host
 }
 
 func estimateTokens(text string) int {

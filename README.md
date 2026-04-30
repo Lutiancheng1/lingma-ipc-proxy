@@ -1,8 +1,8 @@
-# Lingma IPC Proxy
+# Lingma Proxy
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
-Lingma IPC Proxy exposes Tongyi Lingma's local IDE plugin capability as standard **OpenAI-compatible** and **Anthropic-compatible** HTTP APIs. It can be used as a CLI proxy service or as a cross-platform desktop app for macOS and Windows.
+Lingma Proxy exposes Tongyi Lingma as standard **OpenAI-compatible** and **Anthropic-compatible** HTTP APIs. It can use either the local IDE plugin IPC channel or an experimental remote API backend, and ships as both a CLI proxy service and a cross-platform desktop app for macOS and Windows.
 
 The project is designed for tools such as Claude Code, Cline, Continue, OpenCode, custom agents, and any client that can talk to OpenAI or Anthropic style APIs.
 
@@ -13,7 +13,7 @@ The proxy now supports two backend modes:
 
 ## Current Version
 
-The current desktop line is `v1.4.0`.
+The current desktop line is `v1.4.1`.
 
 Release builds are produced by GitHub Actions for:
 
@@ -156,9 +156,9 @@ flowchart LR
 
 | Platform | Default transport | Detection |
 | --- | --- | --- |
-| macOS | WebSocket | reads Lingma `SharedClientCache` files under user application support paths |
-| Windows | Named Pipe / WebSocket | scans Lingma named pipes and shared cache hints |
-| Linux | WebSocket | manual `--ws-url` is recommended |
+| macOS | WebSocket | reads Lingma `SharedClientCache` files under user application support paths and `~/.lingma` fallbacks |
+| Windows | Named Pipe / WebSocket | scans Lingma named pipes plus `%APPDATA%`, `%LOCALAPPDATA%`, `%ProgramData%`, and `%USERPROFILE%\.lingma` shared cache hints |
+| Linux | WebSocket | reads `~/.lingma` / XDG hints when present; manual `--ws-url` is still recommended |
 
 If auto detection fails, set the path manually in the desktop Settings page or pass CLI flags:
 
@@ -193,6 +193,9 @@ By default it reads the local Lingma login cache in read-only mode:
 ~/.lingma/cache/user
 ~/.lingma/cache/id
 ~/.lingma/logs/lingma.log
+%APPDATA%\Lingma\cache\user
+%LOCALAPPDATA%\Lingma\cache\user
+XDG config/state Lingma cache paths when present
 ```
 
 You can also pass an explicit credential file:
@@ -222,7 +225,8 @@ Credential file format:
 Notes:
 
 - Remote mode does not write or migrate login state. It only reads the local Lingma cache or the credential file you provide.
-- If your Lingma plugin uses a dedicated domain, set `--remote-base-url`, `LINGMA_REMOTE_BASE_URL`, or the JSON config field explicitly.
+- If your Lingma plugin uses a dedicated domain, remote mode first uses `--remote-base-url`, `LINGMA_REMOTE_BASE_URL`, or the JSON config field. If those are empty, it scans Lingma's local logs on macOS, Windows, and Linux for endpoint hints such as `endpoint config:` and marketplace service URLs.
+- The desktop Settings page shows the resolved remote domain and detection source without exposing tokens.
 - `/v1/models` in remote mode returns remote API model keys, which may not match the IPC plugin display IDs such as `MiniMax-M2.7` or `Kimi-K2.6`.
 - Local validation passed `/health`, `/v1/models`, OpenAI streaming/non-streaming chat, and Claude Code Anthropic + Bash tool use. Claude Code full tool runs are much slower than simple OpenAI requests because the client sends a large context and performs a second tool-result turn.
 - This mode is inspired by the remote API and credential-signing research in [ZipperCode/lingma2api](https://github.com/ZipperCode/lingma2api), integrated here as a switchable backend under the existing OpenAI / Anthropic / desktop app architecture.

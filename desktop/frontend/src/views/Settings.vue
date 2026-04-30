@@ -1,10 +1,11 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { GetConfig, UpdateConfig } from '../../wailsjs/go/main/App.js'
+import { GetConfig, GetDetectionInfo, UpdateConfig } from '../../wailsjs/go/main/App.js'
 
 const emit = defineEmits(['log', 'status-refresh'])
 
 const config = ref({})
+const detection = ref(null)
 const saving = ref(false)
 const openSelect = ref('')
 
@@ -47,20 +48,31 @@ function toggleSelect(field) {
 function chooseOption(field, value) {
   config.value[field] = value
   openSelect.value = ''
+  refreshDetection()
 }
 
 onMounted(async () => {
   try {
     config.value = await GetConfig()
+    await refreshDetection()
   } catch (e) {
     emit('log', 'error', '配置加载失败：' + (e.message || String(e)))
   }
 })
 
+async function refreshDetection() {
+  try {
+    detection.value = await GetDetectionInfo()
+  } catch (e) {
+    emit('log', 'warn', '探测信息加载失败：' + (e.message || String(e)))
+  }
+}
+
 async function save() {
   saving.value = true
   try {
     await UpdateConfig(config.value)
+    await refreshDetection()
     emit('log', 'info', '配置已保存，代理已按需重启')
     emit('status-refresh')
   } catch (e) {
@@ -168,6 +180,50 @@ async function save() {
         <div class="hint-box">
           <strong>自动探测失败时</strong>
           <span>IPC 模式先确认 VS Code / Lingma 插件已启动并登录。远端 API 模式会优先读取认证文件；留空时只读 <code>~/.lingma/cache/user</code>，不会写入或上传登录态。</span>
+        </div>
+        <div v-if="detection" class="detect-card">
+          <div class="detect-title">
+            <strong>当前解析结果</strong>
+            <button type="button" @click="refreshDetection">刷新</button>
+          </div>
+          <dl>
+            <div>
+              <dt>监听地址</dt>
+              <dd>{{ detection.listenUrl || '未启动' }}</dd>
+            </div>
+            <div>
+              <dt>当前后端</dt>
+              <dd>{{ detection.backendLabel || detection.backend }}</dd>
+            </div>
+            <div>
+              <dt>IPC 地址</dt>
+              <dd v-if="detection.ipcSuccess">{{ detection.ipcTransport }} · {{ detection.ipcEndpoint }}</dd>
+              <dd v-else class="warn-text">{{ detection.ipcError || '未探测到' }}</dd>
+            </div>
+            <div>
+              <dt>远端域名</dt>
+              <dd>
+                {{ detection.remoteBaseUrl }}
+                <span v-if="detection.remoteBaseUrlSource" class="muted-inline">来自 {{ detection.remoteBaseUrlSource }}</span>
+              </dd>
+            </div>
+            <div>
+              <dt>登录态来源</dt>
+              <dd v-if="detection.remoteCredentialSuccess">{{ detection.remoteCredentialSource }}</dd>
+              <dd v-else class="warn-text">{{ detection.remoteCredentialError || '未探测到' }}</dd>
+            </div>
+            <div v-if="detection.remoteCredentialSuccess">
+              <dt>账号 / 机器</dt>
+              <dd>{{ detection.remoteUserId || '未知用户' }} · {{ detection.remoteMachineId || '未知机器' }}</dd>
+            </div>
+            <div v-if="detection.remoteCredentialSuccess">
+              <dt>登录态有效期</dt>
+              <dd :class="{ 'warn-text': detection.remoteTokenExpired }">
+                {{ detection.remoteTokenExpireAt || '未提供' }}
+                <span v-if="detection.remoteTokenExpired">（已过期）</span>
+              </dd>
+            </div>
+          </dl>
         </div>
       </div>
 
