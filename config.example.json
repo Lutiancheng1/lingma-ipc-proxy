@@ -6,7 +6,16 @@
   "mode": "chat",
   "model": "kmodel",
   "session_mode": "auto",
-  "timeout": 120,
+  "timeout": 300,
+  "remote_fallback_enabled": true,
+  "remote_fallback_models": [
+    "kmodel",
+    "mmodel",
+    "dashscope_qwen3_coder",
+    "dashscope_qmodel",
+    "dashscope_qwen_max_latest",
+    "dashscope_qwen_plus_20250428_thinking"
+  ],
   "cwd": "C:/Workspace/Personal/lingma-ipc-proxy",
   "shell_type": "powershell",
   "current_file_path": "",

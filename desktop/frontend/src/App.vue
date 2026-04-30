@@ -6,7 +6,7 @@ import Models from './views/Models.vue'
 import Requests from './views/Requests.vue'
 import Settings from './views/Settings.vue'
 import { EventsOff, EventsOn } from '../wailsjs/runtime'
-import { GetStatus, HideWindow, MinimizeWindow } from '../wailsjs/go/main/App.js'
+import { ClearLogs, GetLogs, GetStatus, HideWindow, MinimizeWindow } from '../wailsjs/go/main/App.js'
 import lingmaIcon from './assets/images/lingma-icon.png'
 
 const currentTab = ref('dashboard')
@@ -42,8 +42,13 @@ function showToast(message) {
   }, 2200)
 }
 
-function clearLocalLogs() {
-  logs.value = []
+async function clearLocalLogs() {
+  try {
+    await ClearLogs()
+    logs.value = []
+  } catch (e) {
+    logs.value = []
+  }
 }
 
 function setStatus(nextStatus) {
@@ -158,13 +163,24 @@ onMounted(() => {
   systemThemeQuery?.addEventListener?.('change', applyTheme)
   applyTheme()
   refreshStatus()
+  GetLogs().then((items) => {
+    logs.value = Array.isArray(items) ? items : []
+  }).catch(() => {})
   safeEventsOn('models:updated', (data) => {
     status.value.models = Array.isArray(data) ? data.length : status.value.models
     addLog('info', `模型列表已更新：${status.value.models} 个模型`)
   })
   safeEventsOn('log', (data) => {
-    addLog(data.level || 'info', data.message || '')
+    if (data.time && data.message !== undefined) {
+      logs.value.unshift(data)
+      if (logs.value.length > 500) logs.value = logs.value.slice(0, 500)
+    } else {
+      addLog(data.level || 'info', data.message || '')
+    }
     refreshStatus()
+  })
+  safeEventsOn('logs:updated', (data) => {
+    logs.value = Array.isArray(data) ? data : []
   })
   safeEventsOn('quit:confirm', (message) => {
     showToast(message || '再按一次退出快捷键将停止代理并退出应用')
@@ -183,6 +199,7 @@ onUnmounted(() => {
   systemThemeQuery?.removeEventListener?.('change', applyTheme)
   safeEventsOff('models:updated')
   safeEventsOff('log')
+  safeEventsOff('logs:updated')
   safeEventsOff('quit:confirm')
   safeEventsOff('status:updated')
   safeEventsOff('requests:updated')
@@ -222,7 +239,7 @@ onUnmounted(() => {
         <span class="status-dot" :class="{ running: status.running }"></span>
         <div>
           <strong>{{ status.running ? 'Proxy Running' : 'Proxy Stopped' }}</strong>
-          <small>v1.4.2</small>
+          <small>v1.4.3</small>
         </div>
       </div>
     </aside>

@@ -1,5 +1,21 @@
 export namespace main {
 
+	export class AppLog {
+	    time: string;
+	    level: string;
+	    message: string;
+
+	    static createFrom(source: any = {}) {
+	        return new AppLog(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.time = source["time"];
+	        this.level = source["level"];
+	        this.message = source["message"];
+	    }
+	}
 	export class DetectionInfo {
 	    listenUrl: string;
 	    backend: string;
@@ -86,6 +102,9 @@ export namespace main {
 	    statusCode: number;
 	    duration: string;
 	    size?: string;
+	    inputTokens?: number;
+	    outputTokens?: number;
+	    totalTokens?: number;
 	    reqBody?: string;
 	    respBody?: string;
 
@@ -102,8 +121,37 @@ export namespace main {
 	        this.statusCode = source["statusCode"];
 	        this.duration = source["duration"];
 	        this.size = source["size"];
+	        this.inputTokens = source["inputTokens"];
+	        this.outputTokens = source["outputTokens"];
+	        this.totalTokens = source["totalTokens"];
 	        this.reqBody = source["reqBody"];
 	        this.respBody = source["respBody"];
+	    }
+	}
+	export class TokenStats {
+	    totalRequests: number;
+	    successRequests: number;
+	    inputTokens: number;
+	    outputTokens: number;
+	    totalTokens: number;
+	    byModel?: Record<string, number>;
+	    lastModel?: string;
+	    lastUpdated?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new TokenStats(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.totalRequests = source["totalRequests"];
+	        this.successRequests = source["successRequests"];
+	        this.inputTokens = source["inputTokens"];
+	        this.outputTokens = source["outputTokens"];
+	        this.totalTokens = source["totalTokens"];
+	        this.byModel = source["byModel"];
+	        this.lastModel = source["lastModel"];
+	        this.lastUpdated = source["lastUpdated"];
 	    }
 	}
 
@@ -128,6 +176,8 @@ export namespace service {
 	    ShellType: string;
 	    SessionMode: string;
 	    Timeout: number;
+	    RemoteFallbackEnabled: boolean;
+	    RemoteFallbackModels: string[];
 
 	    static createFrom(source: any = {}) {
 	        return new Config(source);
@@ -151,6 +201,8 @@ export namespace service {
 	        this.ShellType = source["ShellType"];
 	        this.SessionMode = source["SessionMode"];
 	        this.Timeout = source["Timeout"];
+	        this.RemoteFallbackEnabled = source["RemoteFallbackEnabled"];
+	        this.RemoteFallbackModels = source["RemoteFallbackModels"];
 	    }
 	}
 

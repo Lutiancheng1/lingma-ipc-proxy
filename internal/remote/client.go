@@ -76,7 +76,7 @@ func New(cfg Config) *Client {
 		cfg.CosyVersion = "2.11.2"
 	}
 	if cfg.Timeout <= 0 {
-		cfg.Timeout = 120 * time.Second
+		cfg.Timeout = 300 * time.Second
 	}
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
 	return &Client{cfg: cfg, client: &http.Client{Timeout: cfg.Timeout}}

@@ -14,7 +14,7 @@ const activeStatus = ref('all')
 const filtered = computed(() => {
   const q = query.value.trim().toLowerCase()
   return requests.value.filter((request) => {
-    const matchesQuery = !q || `${request.method} ${request.path} ${request.statusCode}`.toLowerCase().includes(q)
+    const matchesQuery = !q || `${request.method} ${request.path} ${request.statusCode} ${request.model || ''}`.toLowerCase().includes(q)
     const code = Number(request.statusCode)
     const matchesStatus =
       activeStatus.value === 'all' ||
@@ -117,7 +117,10 @@ onUnmounted(() => {
 
     <section class="table-panel requests-panel">
       <div class="table-toolbar">
-        <input v-model="query" class="search-input" type="search" placeholder="搜索路径、方法或状态码" />
+        <div class="toolbar-search-wrap">
+          <input v-model="query" class="search-input toolbar-search-input" type="search" placeholder="搜索路径、方法或状态码" />
+          <span class="muted toolbar-count">Showing {{ filtered.length }} of {{ requests.length }}</span>
+        </div>
         <div class="segmented">
           <button :class="{ active: activeStatus === 'all' }" type="button" @click="activeStatus = 'all'">全部</button>
           <button :class="{ active: activeStatus === 'ok' }" type="button" @click="activeStatus = 'ok'">成功</button>
@@ -133,6 +136,7 @@ onUnmounted(() => {
               <th>时间</th>
               <th>方法</th>
               <th>路径</th>
+              <th>模型</th>
               <th>状态</th>
               <th>耗时</th>
             </tr>
@@ -150,6 +154,7 @@ onUnmounted(() => {
                 <div class="cell-main">{{ request.path }}</div>
                 <div class="cell-sub">{{ request.reqBody ? '包含请求体' : '无请求体' }}</div>
               </td>
+              <td>{{ request.model || '-' }}</td>
               <td><span class="status-chip" :class="statusClass(request.statusCode)">{{ request.statusCode }}</span></td>
               <td>{{ request.duration }}</td>
             </tr>

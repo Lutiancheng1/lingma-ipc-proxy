@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"os"
 	goruntime "runtime"
 
 	"github.com/wailsapp/wails/v2"
@@ -17,6 +18,7 @@ var assets embed.FS
 
 func main() {
 	app := NewApp()
+	enableInspector := os.Getenv("LINGMA_DESKTOP_DEBUG") == "1"
 
 	err := wails.Run(&options.App{
 		Title:             "Lingma IPC Proxy",
@@ -27,6 +29,10 @@ func main() {
 		HideWindowOnClose: true,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
+		},
+		EnableDefaultContextMenu: enableInspector,
+		Debug: options.Debug{
+			OpenInspectorOnStartup: enableInspector,
 		},
 		BackgroundColour: &options.RGBA{R: 15, G: 23, B: 42, A: 1},
 		Menu:             appMenu(app),

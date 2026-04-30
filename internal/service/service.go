@@ -35,22 +35,24 @@ const (
 )
 
 type Config struct {
-	Host            string
-	Port            int
-	Backend         BackendMode
-	Transport       lingmaipc.Transport
-	Pipe            string
-	WebSocketURL    string
-	RemoteBaseURL   string
-	RemoteAuthFile  string
-	RemoteVersion   string
-	Cwd             string
-	CurrentFilePath string
-	Mode            string
-	Model           string
-	ShellType       string
-	SessionMode     SessionMode
-	Timeout         time.Duration
+	Host                  string
+	Port                  int
+	Backend               BackendMode
+	Transport             lingmaipc.Transport
+	Pipe                  string
+	WebSocketURL          string
+	RemoteBaseURL         string
+	RemoteAuthFile        string
+	RemoteVersion         string
+	Cwd                   string
+	CurrentFilePath       string
+	Mode                  string
+	Model                 string
+	ShellType             string
+	SessionMode           SessionMode
+	Timeout               time.Duration
+	RemoteFallbackEnabled bool
+	RemoteFallbackModels  []string
 }
 
 type Image struct {
@@ -166,7 +168,7 @@ func New(cfg Config) *Service {
 		cfg.ShellType = lingmaipc.DefaultShellType()
 	}
 	if cfg.Timeout <= 0 {
-		cfg.Timeout = 120 * time.Second
+		cfg.Timeout = 300 * time.Second
 	}
 	if cfg.Transport == "" {
 		cfg.Transport = lingmaipc.TransportAuto
@@ -174,11 +176,27 @@ func New(cfg Config) *Service {
 	if cfg.Backend == "" {
 		cfg.Backend = BackendRemote
 	}
+	if cfg.Backend == BackendRemote {
+		if len(cfg.RemoteFallbackModels) == 0 {
+			cfg.RemoteFallbackModels = DefaultRemoteFallbackModels()
+		}
+	}
 	cfg.Model = normalizeModelForBackend(cfg.Backend, cfg.Model)
 	if cfg.SessionMode == "" {
 		cfg.SessionMode = SessionModeAuto
 	}
 	return &Service{cfg: cfg}
+}
+
+func DefaultRemoteFallbackModels() []string {
+	return []string{
+		"kmodel",
+		"mmodel",
+		"dashscope_qwen3_coder",
+		"dashscope_qmodel",
+		"dashscope_qwen_max_latest",
+		"dashscope_qwen_plus_20250428_thinking",
+	}
 }
 
 func (s *Service) SetDefaultModel(model string) {
@@ -331,9 +349,6 @@ func (s *Service) generateRemote(
 	req ChatRequest,
 	onDelta func(string),
 ) (*ChatResult, error) {
-	requestCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
-	defer cancel()
-
 	if strings.TrimSpace(req.Model) == "" {
 		req.Model = s.DefaultModel()
 	}
@@ -346,20 +361,54 @@ func (s *Service) generateRemote(
 		return nil, errors.New("empty user message")
 	}
 
+	models := s.remoteAttemptModels(ctx, req.Model)
 	client := s.remoteClientLocked()
-	remoteResult, err := client.Chat(requestCtx, remote.ChatRequest{
-		Model:       req.Model,
+	var lastErr error
+	for i, model := range models {
+		attemptCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
+		result, emitted, err := s.generateRemoteWithModel(attemptCtx, client, req, prompt, model, onDelta)
+		cancel()
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		if i == len(models)-1 || emitted || !isRemoteFallbackError(err) {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+func (s *Service) generateRemoteWithModel(
+	ctx context.Context,
+	client *remote.Client,
+	req ChatRequest,
+	prompt string,
+	model string,
+	onDelta func(string),
+) (*ChatResult, bool, error) {
+	emitted := false
+	delta := func(text string) {
+		if text != "" {
+			emitted = true
+		}
+		if onDelta != nil {
+			onDelta(text)
+		}
+	}
+	remoteResult, err := client.Chat(ctx, remote.ChatRequest{
+		Model:       model,
 		Prompt:      prompt,
 		Stream:      onDelta != nil,
 		Temperature: req.Temperature,
-	}, onDelta)
+	}, delta)
 	if err != nil {
-		return nil, err
+		return nil, emitted, err
 	}
 
 	result := &ChatResult{
 		Text:             remoteResult.Text,
-		Model:            valueOr(strings.TrimSpace(req.Model), "lingma"),
+		Model:            valueOr(strings.TrimSpace(model), "lingma"),
 		InputTokens:      remoteResult.InputTokens,
 		OutputTokens:     remoteResult.OutputTokens,
 		SessionID:        "",
@@ -370,9 +419,9 @@ func (s *Service) generateRemote(
 		Transport:        "remote",
 		EffectiveSession: SessionModeFresh,
 	}
-	s.applyToolEmulation(requestCtx, req, prompt, result, onDelta, func(hintPrompt string) (string, int, error) {
-		retryResult, retryErr := client.Chat(requestCtx, remote.ChatRequest{
-			Model:       req.Model,
+	s.applyToolEmulation(ctx, req, prompt, result, onDelta, func(hintPrompt string) (string, int, error) {
+		retryResult, retryErr := client.Chat(ctx, remote.ChatRequest{
+			Model:       model,
 			Prompt:      hintPrompt,
 			Stream:      onDelta != nil,
 			Temperature: req.Temperature,
@@ -385,7 +434,78 @@ func (s *Service) generateRemote(
 		}
 		return retryResult.Text, retryResult.OutputTokens, nil
 	})
-	return result, nil
+	return result, emitted, nil
+}
+
+func (s *Service) remoteAttemptModels(ctx context.Context, primary string) []string {
+	primary = normalizeModelForBackend(BackendRemote, primary)
+	models := []string{primary}
+	if !s.cfg.RemoteFallbackEnabled {
+		return models
+	}
+
+	availableCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	remoteModels, err := s.remoteClientLocked().ListModels(availableCtx)
+	cancel()
+	if err != nil {
+		return models
+	}
+
+	available := make(map[string]bool, len(remoteModels))
+	for _, model := range remoteModels {
+		key := normalizeModelForBackend(BackendRemote, model.Key)
+		if key != "" {
+			available[key] = true
+		}
+	}
+
+	fallbackModels := s.cfg.RemoteFallbackModels
+	if len(fallbackModels) == 0 {
+		fallbackModels = DefaultRemoteFallbackModels()
+	}
+	ordered := make([]string, 0, len(fallbackModels))
+	seen := map[string]bool{primary: true}
+	primaryIndex := -1
+	for _, candidate := range fallbackModels {
+		model := normalizeModelForBackend(BackendRemote, candidate)
+		if model == "" {
+			continue
+		}
+		if model == primary && primaryIndex == -1 {
+			primaryIndex = len(ordered)
+		}
+		ordered = append(ordered, model)
+	}
+
+	start := 0
+	if primaryIndex >= 0 {
+		start = primaryIndex + 1
+	}
+	for _, model := range ordered[start:] {
+		if seen[model] || !available[model] {
+			continue
+		}
+		seen[model] = true
+		models = append(models, model)
+	}
+	return models
+}
+
+func isRemoteFallbackError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "client.timeout") ||
+		strings.Contains(msg, "timeout awaiting response") ||
+		strings.Contains(msg, "remote chat status 5") ||
+		strings.Contains(msg, "remote chat status 429") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "unexpected eof")
 }
 
 func (s *Service) generateLocked(

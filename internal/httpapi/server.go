@@ -1400,9 +1400,6 @@ func redactRecordedValue(value any) any {
 		if looksLikeImagePayload(typed) {
 			return imageRedaction(typed)
 		}
-		if len(typed) > 12000 {
-			return typed[:12000] + "... [truncated]"
-		}
 		return typed
 	default:
 		return typed
@@ -1443,11 +1440,7 @@ func mustMarshalJSON(value any) []byte {
 }
 
 func truncateRecordedString(value string) string {
-	const maxRecordedBody = 120000
-	if len(value) <= maxRecordedBody {
-		return value
-	}
-	return value[:maxRecordedBody] + "... [truncated]"
+	return value
 }
 
 func withCORS(next http.Handler) http.Handler {

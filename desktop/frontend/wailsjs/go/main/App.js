@@ -18,6 +18,10 @@ export function GetDetectionInfo() {
   return window['go']['main']['App']['GetDetectionInfo']();
 }
 
+export function GetLogs() {
+  return window['go']['main']['App']['GetLogs']();
+}
+
 export function GetModels() {
   return window['go']['main']['App']['GetModels']();
 }
@@ -28,6 +32,10 @@ export function GetRequests() {
 
 export function GetStatus() {
   return window['go']['main']['App']['GetStatus']();
+}
+
+export function GetTokenStats() {
+  return window['go']['main']['App']['GetTokenStats']();
 }
 
 export function HideWindow() {

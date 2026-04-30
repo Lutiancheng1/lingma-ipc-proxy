@@ -25,15 +25,35 @@ import (
 // App struct
 // RequestRecord stores a single HTTP request summary
 type RequestRecord struct {
-	Time       string `json:"time"`
-	Method     string `json:"method"`
-	Path       string `json:"path"`
-	Model      string `json:"model,omitempty"`
-	StatusCode int    `json:"statusCode"`
-	Duration   string `json:"duration"`
-	Size       string `json:"size,omitempty"`
-	ReqBody    string `json:"reqBody,omitempty"`
-	RespBody   string `json:"respBody,omitempty"`
+	Time         string `json:"time"`
+	Method       string `json:"method"`
+	Path         string `json:"path"`
+	Model        string `json:"model,omitempty"`
+	StatusCode   int    `json:"statusCode"`
+	Duration     string `json:"duration"`
+	Size         string `json:"size,omitempty"`
+	InputTokens  int    `json:"inputTokens,omitempty"`
+	OutputTokens int    `json:"outputTokens,omitempty"`
+	TotalTokens  int    `json:"totalTokens,omitempty"`
+	ReqBody      string `json:"reqBody,omitempty"`
+	RespBody     string `json:"respBody,omitempty"`
+}
+
+type AppLog struct {
+	Time    string `json:"time"`
+	Level   string `json:"level"`
+	Message string `json:"message"`
+}
+
+type TokenStats struct {
+	TotalRequests   int            `json:"totalRequests"`
+	SuccessRequests int            `json:"successRequests"`
+	InputTokens     int            `json:"inputTokens"`
+	OutputTokens    int            `json:"outputTokens"`
+	TotalTokens     int            `json:"totalTokens"`
+	ByModel         map[string]int `json:"byModel,omitempty"`
+	LastModel       string         `json:"lastModel,omitempty"`
+	LastUpdated     string         `json:"lastUpdated,omitempty"`
 }
 
 type App struct {
@@ -49,6 +69,8 @@ type App struct {
 	quitHint  time.Time
 	models    []ModelInfo
 	requests  []RequestRecord
+	logs      []AppLog
+	stats     TokenStats
 }
 
 // ModelInfo represents a model returned by /v1/models
@@ -96,6 +118,9 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.cfg = defaultConfig()
+	if err := a.loadAppState(); err != nil {
+		runtime.LogWarningf(a.ctx, "failed to load app state: %v", err)
+	}
 
 	// Auto-save default config on first run so users can find/edit it later
 	if err := a.saveConfig(a.cfg); err != nil {
@@ -208,10 +233,19 @@ func (a *App) forceQuit() {
 }
 
 func (a *App) emitLog(level string, message string) {
-	runtime.EventsEmit(a.ctx, "log", map[string]string{
-		"level":   level,
-		"message": message,
-	})
+	entry := AppLog{
+		Time:    time.Now().Format("15:04:05"),
+		Level:   level,
+		Message: message,
+	}
+	a.mu.Lock()
+	a.logs = append(a.logs, entry)
+	if len(a.logs) > 2000 {
+		a.logs = a.logs[len(a.logs)-2000:]
+	}
+	a.saveAppStateLocked()
+	a.mu.Unlock()
+	runtime.EventsEmit(a.ctx, "log", entry)
 }
 
 // GetStatus returns the current proxy status
@@ -331,22 +365,24 @@ func (a *App) saveConfig(cfg service.Config) error {
 
 	timeoutSec := int(cfg.Timeout.Seconds())
 	fileCfg := map[string]any{
-		"host":              cfg.Host,
-		"port":              cfg.Port,
-		"backend":           string(cfg.Backend),
-		"transport":         string(cfg.Transport),
-		"pipe":              cfg.Pipe,
-		"websocket_url":     cfg.WebSocketURL,
-		"remote_base_url":   cfg.RemoteBaseURL,
-		"remote_auth_file":  cfg.RemoteAuthFile,
-		"remote_version":    cfg.RemoteVersion,
-		"cwd":               cfg.Cwd,
-		"current_file_path": cfg.CurrentFilePath,
-		"mode":              cfg.Mode,
-		"model":             cfg.Model,
-		"shell_type":        cfg.ShellType,
-		"session_mode":      string(cfg.SessionMode),
-		"timeout":           timeoutSec,
+		"host":                    cfg.Host,
+		"port":                    cfg.Port,
+		"backend":                 string(cfg.Backend),
+		"transport":               string(cfg.Transport),
+		"pipe":                    cfg.Pipe,
+		"websocket_url":           cfg.WebSocketURL,
+		"remote_base_url":         cfg.RemoteBaseURL,
+		"remote_auth_file":        cfg.RemoteAuthFile,
+		"remote_version":          cfg.RemoteVersion,
+		"cwd":                     cfg.Cwd,
+		"current_file_path":       cfg.CurrentFilePath,
+		"mode":                    cfg.Mode,
+		"model":                   cfg.Model,
+		"shell_type":              cfg.ShellType,
+		"session_mode":            string(cfg.SessionMode),
+		"timeout":                 timeoutSec,
+		"remote_fallback_enabled": cfg.RemoteFallbackEnabled,
+		"remote_fallback_models":  cfg.RemoteFallbackModels,
 	}
 
 	data, err := json.MarshalIndent(fileCfg, "", "  ")
@@ -361,14 +397,16 @@ func (a *App) saveConfig(cfg service.Config) error {
 // StartProxy starts the lingma-ipc-proxy HTTP server
 func (a *App) StartProxy() error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	if a.running {
+		a.mu.Unlock()
 		return fmt.Errorf("proxy already running")
 	}
 
 	addr := fmt.Sprintf("%s:%d", a.cfg.Host, a.cfg.Port)
-	svc := service.New(a.cfg)
+	cfg := a.cfg
+	a.mu.Unlock()
+
+	svc := service.New(cfg)
 
 	warmupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := svc.Warmup(warmupCtx); err != nil {
@@ -382,23 +420,32 @@ func (a *App) StartProxy() error {
 
 	server := httpapi.NewServer(addr, svc)
 	server.OnRequest = func(method, path string, statusCode int, duration time.Duration, reqBody, respBody string) {
-		a.mu.Lock()
-		a.requests = append(a.requests, RequestRecord{
-			Time:       time.Now().Format("15:04:05"),
-			Method:     method,
-			Path:       path,
-			Model:      extractRequestModel(reqBody),
-			StatusCode: statusCode,
-			Duration:   duration.Round(time.Millisecond).String(),
-			Size:       formatPayloadSize(len(reqBody) + len(respBody)),
-			ReqBody:    reqBody,
-			RespBody:   respBody,
-		})
-		if len(a.requests) > 100 {
-			a.requests = a.requests[len(a.requests)-100:]
+		inputTokens, outputTokens := extractTokenUsage(respBody)
+		model := extractRequestModel(reqBody)
+		record := RequestRecord{
+			Time:         time.Now().Format("15:04:05"),
+			Method:       method,
+			Path:         path,
+			Model:        model,
+			StatusCode:   statusCode,
+			Duration:     duration.Round(time.Millisecond).String(),
+			Size:         formatPayloadSize(len(reqBody) + len(respBody)),
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			TotalTokens:  inputTokens + outputTokens,
+			ReqBody:      reqBody,
+			RespBody:     respBody,
 		}
+		a.mu.Lock()
+		a.requests = append(a.requests, record)
+		if len(a.requests) > 2000 {
+			a.requests = a.requests[len(a.requests)-2000:]
+		}
+		a.accumulateTokenStatsLocked(record)
+		a.saveAppStateLocked()
 		a.mu.Unlock()
 		runtime.EventsEmit(a.ctx, "requests:updated", a.GetRequests())
+		runtime.EventsEmit(a.ctx, "usage:updated", a.GetTokenStats())
 	}
 
 	// Check if the port is available before claiming we're running
@@ -420,10 +467,16 @@ func (a *App) StartProxy() error {
 		}
 	}()
 
+	a.mu.Lock()
+	if a.running {
+		a.mu.Unlock()
+		return fmt.Errorf("proxy already running")
+	}
 	a.server = server
 	a.addr = addr
 	a.running = true
 	a.startedAt = time.Now()
+	a.mu.Unlock()
 
 	msg := fmt.Sprintf("Proxy started on http://%s", addr)
 	runtime.LogInfof(a.ctx, msg)
@@ -435,8 +488,24 @@ func (a *App) StartProxy() error {
 	return nil
 }
 
-// ClearLogs is a no-op backend helper (logs are kept in frontend memory)
-func (a *App) ClearLogs() {}
+func (a *App) GetLogs() []AppLog {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	out := make([]AppLog, len(a.logs))
+	copy(out, a.logs)
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
+
+func (a *App) ClearLogs() {
+	a.mu.Lock()
+	a.logs = nil
+	a.saveAppStateLocked()
+	a.mu.Unlock()
+	runtime.EventsEmit(a.ctx, "logs:updated", a.GetLogs())
+}
 
 // StopProxy stops the proxy server
 func (a *App) StopProxy() error {
@@ -493,8 +562,19 @@ func (a *App) GetRequests() []RequestRecord {
 func (a *App) ClearRequests() {
 	a.mu.Lock()
 	a.requests = nil
+	a.saveAppStateLocked()
 	a.mu.Unlock()
 	a.emitLog("info", "Request history cleared")
+}
+
+func (a *App) GetTokenStats() TokenStats {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	stats := a.stats
+	if stats.ByModel != nil {
+		stats.ByModel = cloneIntMap(stats.ByModel)
+	}
+	return stats
 }
 
 // RefreshModels probes the running proxy for the latest model list.
@@ -614,18 +694,221 @@ func formatPayloadSize(bytes int) string {
 	return fmt.Sprintf("%d B", bytes)
 }
 
+type appStateFile struct {
+	Requests []RequestRecord `json:"requests"`
+	Logs     []AppLog        `json:"logs"`
+	Stats    TokenStats      `json:"stats"`
+}
+
+func (a *App) loadAppState() error {
+	path, err := appStatePath()
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var state appStateFile
+	if err := json.Unmarshal(data, &state); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.requests = state.Requests
+	a.logs = state.Logs
+	a.stats = state.Stats
+	if a.stats.ByModel == nil {
+		a.stats.ByModel = map[string]int{}
+	}
+	a.reconcileTokenStatsLocked()
+	return nil
+}
+
+func (a *App) saveAppStateLocked() {
+	path, err := appStatePath()
+	if err != nil {
+		runtime.LogWarningf(a.ctx, "resolve app state path failed: %v", err)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		runtime.LogWarningf(a.ctx, "create app state dir failed: %v", err)
+		return
+	}
+	state := appStateFile{
+		Requests: a.requests,
+		Logs:     a.logs,
+		Stats:    a.stats,
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		runtime.LogWarningf(a.ctx, "marshal app state failed: %v", err)
+		return
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		runtime.LogWarningf(a.ctx, "write app state failed: %v", err)
+	}
+}
+
+func appStatePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".config", "lingma-ipc-proxy", "app-state.json"), nil
+}
+
+func (a *App) accumulateTokenStatsLocked(record RequestRecord) {
+	a.stats.TotalRequests++
+	if record.StatusCode >= 200 && record.StatusCode < 300 {
+		a.stats.SuccessRequests++
+	}
+	a.stats.InputTokens += record.InputTokens
+	a.stats.OutputTokens += record.OutputTokens
+	a.stats.TotalTokens += record.TotalTokens
+	if a.stats.ByModel == nil {
+		a.stats.ByModel = map[string]int{}
+	}
+	model := strings.TrimSpace(record.Model)
+	if model == "" {
+		model = "-"
+	}
+	if record.TotalTokens > 0 {
+		a.stats.ByModel[model] += record.TotalTokens
+		if isUsageBearingRequest(record.Path) && model != "-" {
+			a.stats.LastModel = model
+		}
+	}
+	a.stats.LastUpdated = time.Now().Format(time.RFC3339)
+}
+
+func (a *App) reconcileTokenStatsLocked() {
+	if a.stats.ByModel == nil {
+		a.stats.ByModel = map[string]int{}
+	}
+	a.stats.LastModel = ""
+	for i := len(a.requests) - 1; i >= 0; i-- {
+		record := a.requests[i]
+		model := strings.TrimSpace(record.Model)
+		if model == "" || record.TotalTokens <= 0 || !isUsageBearingRequest(record.Path) {
+			continue
+		}
+		a.stats.LastModel = model
+		break
+	}
+}
+
+func isUsageBearingRequest(path string) bool {
+	switch strings.TrimSpace(path) {
+	case "/v1/messages", "/v1/chat/completions", "/v1/completions":
+		return true
+	default:
+		return false
+	}
+}
+
+func cloneIntMap(src map[string]int) map[string]int {
+	out := make(map[string]int, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
+}
+
+func extractTokenUsage(respBody string) (int, int) {
+	if strings.TrimSpace(respBody) == "" {
+		return 0, 0
+	}
+	input, output := extractUsageFromJSON(respBody)
+	if input != 0 || output != 0 {
+		return input, output
+	}
+	for _, line := range strings.Split(respBody, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		in, out := extractUsageFromJSON(payload)
+		if in > 0 {
+			input = in
+		}
+		if out > 0 {
+			output = out
+		}
+	}
+	return input, output
+}
+
+func extractUsageFromJSON(raw string) (int, int) {
+	var payload any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return 0, 0
+	}
+	usage, ok := findUsageMap(payload)
+	if !ok {
+		return 0, 0
+	}
+	input := intFromAny(usage["input_tokens"]) + intFromAny(usage["prompt_tokens"])
+	output := intFromAny(usage["output_tokens"]) + intFromAny(usage["completion_tokens"])
+	return input, output
+}
+
+func findUsageMap(value any) (map[string]any, bool) {
+	switch typed := value.(type) {
+	case map[string]any:
+		if usage, ok := typed["usage"].(map[string]any); ok {
+			return usage, true
+		}
+		for _, child := range typed {
+			if usage, ok := findUsageMap(child); ok {
+				return usage, true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if usage, ok := findUsageMap(child); ok {
+				return usage, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func intFromAny(value any) int {
+	switch typed := value.(type) {
+	case float64:
+		return int(typed)
+	case int:
+		return typed
+	case json.Number:
+		n, _ := typed.Int64()
+		return int(n)
+	default:
+		return 0
+	}
+}
+
 func defaultConfig() service.Config {
 	cfg := service.Config{
-		Host:        "127.0.0.1",
-		Port:        8095,
-		Backend:     service.BackendRemote,
-		Transport:   lingmaipc.TransportAuto,
-		Cwd:         defaultCwd(),
-		Mode:        "agent",
-		Model:       "kmodel",
-		ShellType:   defaultShellType(),
-		SessionMode: service.SessionModeAuto,
-		Timeout:     120 * time.Second,
+		Host:                  "127.0.0.1",
+		Port:                  8095,
+		Backend:               service.BackendRemote,
+		Transport:             lingmaipc.TransportAuto,
+		Cwd:                   defaultCwd(),
+		Mode:                  "agent",
+		Model:                 "kmodel",
+		ShellType:             defaultShellType(),
+		SessionMode:           service.SessionModeAuto,
+		Timeout:               300 * time.Second,
+		RemoteFallbackEnabled: true,
+		RemoteFallbackModels:  service.DefaultRemoteFallbackModels(),
 	}
 
 	// Try to load config file from multiple locations
@@ -634,22 +917,24 @@ func defaultConfig() service.Config {
 		if info, err := os.Stat(configPath); err == nil && !info.IsDir() {
 			if data, err := os.ReadFile(configPath); err == nil {
 				var fileCfg struct {
-					Host            string `json:"host"`
-					Port            int    `json:"port"`
-					Backend         string `json:"backend"`
-					Transport       string `json:"transport"`
-					Pipe            string `json:"pipe"`
-					WebSocketURL    string `json:"websocket_url"`
-					RemoteBaseURL   string `json:"remote_base_url"`
-					RemoteAuthFile  string `json:"remote_auth_file"`
-					RemoteVersion   string `json:"remote_version"`
-					Cwd             string `json:"cwd"`
-					CurrentFilePath string `json:"current_file_path"`
-					Mode            string `json:"mode"`
-					Model           string `json:"model"`
-					ShellType       string `json:"shell_type"`
-					SessionMode     string `json:"session_mode"`
-					TimeoutSeconds  int    `json:"timeout"`
+					Host                  string   `json:"host"`
+					Port                  int      `json:"port"`
+					Backend               string   `json:"backend"`
+					Transport             string   `json:"transport"`
+					Pipe                  string   `json:"pipe"`
+					WebSocketURL          string   `json:"websocket_url"`
+					RemoteBaseURL         string   `json:"remote_base_url"`
+					RemoteAuthFile        string   `json:"remote_auth_file"`
+					RemoteVersion         string   `json:"remote_version"`
+					Cwd                   string   `json:"cwd"`
+					CurrentFilePath       string   `json:"current_file_path"`
+					Mode                  string   `json:"mode"`
+					Model                 string   `json:"model"`
+					ShellType             string   `json:"shell_type"`
+					SessionMode           string   `json:"session_mode"`
+					TimeoutSeconds        int      `json:"timeout"`
+					RemoteFallbackEnabled *bool    `json:"remote_fallback_enabled"`
+					RemoteFallbackModels  []string `json:"remote_fallback_models"`
 				}
 				if err := json.Unmarshal(data, &fileCfg); err == nil {
 					if fileCfg.Host != "" {
@@ -702,6 +987,12 @@ func defaultConfig() service.Config {
 					if fileCfg.TimeoutSeconds > 0 {
 						cfg.Timeout = time.Duration(fileCfg.TimeoutSeconds) * time.Second
 					}
+					if fileCfg.RemoteFallbackEnabled != nil {
+						cfg.RemoteFallbackEnabled = *fileCfg.RemoteFallbackEnabled
+					}
+					if len(fileCfg.RemoteFallbackModels) > 0 {
+						cfg.RemoteFallbackModels = cleanConfigStrings(fileCfg.RemoteFallbackModels)
+					}
 				}
 				break // loaded successfully
 			}
@@ -730,6 +1021,20 @@ func maskIdentifier(value string) string {
 		return string(runes[:1]) + "***"
 	}
 	return string(runes[:4]) + "..." + string(runes[len(runes)-4:])
+}
+
+func cleanConfigStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		item := strings.TrimSpace(value)
+		if item == "" || seen[item] {
+			continue
+		}
+		seen[item] = true
+		out = append(out, item)
+	}
+	return out
 }
 
 func configSearchPaths() []string {

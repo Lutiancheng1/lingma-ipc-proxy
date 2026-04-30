@@ -13,7 +13,7 @@ The proxy now supports two backend modes:
 
 ## Current Version
 
-The current desktop line is `v1.4.2`.
+The current desktop line is `v1.4.3`.
 
 See [CHANGELOG.md](./CHANGELOG.md) for release history.
 
@@ -326,6 +326,10 @@ The proxy only reports models actually exposed by your Lingma plugin. The table 
 
 Default model when the client omits `model`: `kmodel` (`Kimi-K2.6` in the remote model list).
 
+Remote mode enables timeout fallback by default. On timeout, upstream 5xx/429, or network interruption, the proxy only switches models if no streaming bytes have been sent to the client yet. Fallback candidates are filtered against the actual `/v1/models` response, so unavailable models are skipped. Default order:
+
+`Kimi-K2.6 -> MiniMax-M2.7 -> Qwen3-Coder -> Qwen3.6-Plus -> Qwen3-Max -> Qwen3-Thinking`
+
 ## Configuration
 
 Default config file:
@@ -348,7 +352,16 @@ Example:
   "mode": "agent",
   "shell_type": "zsh",
   "session_mode": "auto",
-  "timeout": 120,
+  "timeout": 300,
+  "remote_fallback_enabled": true,
+  "remote_fallback_models": [
+    "kmodel",
+    "mmodel",
+    "dashscope_qwen3_coder",
+    "dashscope_qmodel",
+    "dashscope_qwen_max_latest",
+    "dashscope_qwen_plus_20250428_thinking"
+  ],
   "cwd": "/Users/you/project",
   "current_file_path": ""
 }

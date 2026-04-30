@@ -1,23 +1,14 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import {
-  GetModels,
-  GetConfig,
-  GetRequests,
-  GetStatus,
-  QuitApp,
-  RefreshModels,
-  StartProxy,
-  StopProxy,
-} from '../../wailsjs/go/main/App.js'
+import { GetModels, GetConfig, GetRequests, GetStatus, GetTokenStats, QuitApp, RefreshModels, StartProxy, StopProxy } from '../../wailsjs/go/main/App.js'
 import { ClipboardSetText } from '../../wailsjs/runtime'
 import { modelIcon } from '../modelIcons'
 
 const props = defineProps({
   shellStatus: {
     type: Object,
-    default: () => ({ running: false, addr: '', models: 0 }),
-  },
+    default: () => ({ running: false, addr: '', models: 0 })
+  }
 })
 
 const emit = defineEmits(['log', 'status', 'notice', 'open-settings', 'open-requests', 'open-models'])
@@ -25,9 +16,11 @@ const emit = defineEmits(['log', 'status', 'notice', 'open-settings', 'open-requ
 const status = ref(props.shellStatus)
 const models = ref([])
 const requests = ref([])
+const tokenStats = ref({ totalRequests: 0, successRequests: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0 })
 const health = ref(null)
 const config = ref({})
-const loading = ref(false)
+const proxyLoading = ref(false)
+const modelsLoading = ref(false)
 const testing = ref(false)
 const now = ref(Date.now())
 let interval = null
@@ -63,7 +56,7 @@ const healthStats = computed(() => {
     avg,
     p50: percentile(sorted, 0.5),
     p95: percentile(sorted, 0.95),
-    max: sorted[sorted.length - 1],
+    max: Math.round(sorted[sorted.length - 1])
   }
 })
 const chartBars = computed(() => {
@@ -78,17 +71,22 @@ const displayRequests = computed(() => {
 })
 const displayModels = computed(() => {
   if (models.value.length > 0) {
-    return models.value.slice(0, 5).map((model) => ({ ...model, online: true }))
+    return models.value.map((model) => ({ ...model, online: true }))
   }
   return []
+})
+const successRate = computed(() => {
+  const total = Number(tokenStats.value.totalRequests || 0)
+  if (!total) return '0%'
+  return `${Math.round((Number(tokenStats.value.successRequests || 0) / total) * 100)}%`
 })
 
 function parseDurationMs(duration) {
   const text = String(duration || '').trim()
   if (!text) return 0
-  if (text.endsWith('ms')) return Number.parseFloat(text)
-  if (text.endsWith('s')) return Number.parseFloat(text) * 1000
-  return Number.parseFloat(text) || 0
+  if (text.endsWith('ms')) return Math.round(Number.parseFloat(text))
+  if (text.endsWith('s')) return Math.round(Number.parseFloat(text) * 1000)
+  return Math.round(Number.parseFloat(text) || 0)
 }
 
 function percentile(sorted, p) {
@@ -97,12 +95,20 @@ function percentile(sorted, p) {
   return Math.round(sorted[index])
 }
 
+function formatNumber(value) {
+  const n = Number(value || 0)
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`
+  if (n >= 10000) return `${Math.round(n / 1000)}K`
+  return n.toLocaleString('zh-CN')
+}
+
 async function refresh() {
   try {
     const nextStatus = await GetStatus()
     status.value = nextStatus
     emit('status', nextStatus)
     requests.value = await GetRequests()
+    tokenStats.value = await GetTokenStats()
     config.value = await GetConfig()
     if (nextStatus.running) {
       models.value = await GetModels()
@@ -113,7 +119,7 @@ async function refresh() {
 }
 
 async function refreshModels() {
-  loading.value = true
+  modelsLoading.value = true
   try {
     models.value = await RefreshModels()
     emit('log', 'info', `模型探测完成：${models.value.length} 个`)
@@ -121,7 +127,7 @@ async function refreshModels() {
   } catch (e) {
     emit('log', 'error', '模型探测失败：' + (e.message || String(e)) + '。请确认 Lingma 插件已启动并登录；自动探测失败时可到设置页手动填写 WebSocket：ws://127.0.0.1:36510/，或 Windows Named Pipe：\\\\.\\pipe\\lingma-xxxx。')
   } finally {
-    loading.value = false
+    modelsLoading.value = false
   }
 }
 
@@ -141,7 +147,7 @@ async function copyModelName(model) {
 }
 
 async function toggleProxy() {
-  loading.value = true
+  proxyLoading.value = true
   try {
     if (isRunning.value) {
       await StopProxy()
@@ -154,13 +160,13 @@ async function toggleProxy() {
   } catch (e) {
     emit('log', 'error', '代理切换失败：' + (e.message || String(e)))
   } finally {
-    loading.value = false
+    proxyLoading.value = false
   }
 }
 
 async function restartProxy() {
   if (!isRunning.value) return
-  loading.value = true
+  proxyLoading.value = true
   try {
     await StopProxy()
     await StartProxy()
@@ -169,7 +175,7 @@ async function restartProxy() {
   } catch (e) {
     emit('log', 'error', '代理重启失败：' + (e.message || String(e)))
   } finally {
-    loading.value = false
+    proxyLoading.value = false
   }
 }
 
@@ -241,9 +247,9 @@ onUnmounted(() => {
         <strong>{{ sessionLabel }}</strong>
       </div>
       <div class="strip-actions">
-        <button :class="{ active: !isRunning }" type="button" :disabled="loading || isRunning" @click="toggleProxy">启动</button>
-        <button :class="{ active: isRunning }" type="button" :disabled="loading || !isRunning" @click="toggleProxy">停止</button>
-        <button type="button" :disabled="loading || !isRunning" @click="restartProxy">重启</button>
+        <button :class="{ active: !isRunning }" type="button" :disabled="proxyLoading || isRunning" @click="toggleProxy">启动</button>
+        <button :class="{ active: isRunning }" type="button" :disabled="proxyLoading || !isRunning" @click="toggleProxy">停止</button>
+        <button type="button" :disabled="proxyLoading || !isRunning" @click="restartProxy">重启</button>
       </div>
     </section>
 
@@ -257,12 +263,7 @@ onUnmounted(() => {
           <span class="status-chip ok">Healthy</span>
         </div>
         <div class="activity-chart" aria-label="延迟趋势图">
-          <span
-            v-for="(height, index) in chartBars"
-            :key="index"
-            class="bar"
-            :style="{ height: `${height}%`, opacity: 0.55 + index / 45 }"
-          ></span>
+          <span v-for="(height, index) in chartBars" :key="index" class="bar" :style="{ height: `${height}%`, opacity: 0.55 + index / 45 }"></span>
           <span v-if="chartBars.length === 0" class="chart-empty">暂无请求</span>
         </div>
         <div class="health-stats">
@@ -278,22 +279,13 @@ onUnmounted(() => {
           <div>
             <h2>Models</h2>
           </div>
-          <button class="secondary-button" type="button" :disabled="loading || !isRunning" @click="refreshModels">探测模型</button>
+          <button class="btn-sm-outline" type="button" :disabled="modelsLoading || !isRunning" @click="refreshModels">
+            {{ modelsLoading ? '探测中...' : '探测模型' }}
+          </button>
         </div>
         <div class="model-card-list hidden-scrollbar">
-          <button
-            v-for="model in displayModels"
-            :key="model.id"
-            class="model-row model-choice"
-            type="button"
-            :title="`复制模型 ID：${model.id}`"
-            @click="copyModelName(model)"
-          >
-            <span
-              class="model-brand-icon"
-              :style="{ '--model-icon': `url(${modelIcon(model).src})`, '--model-icon-color': modelIcon(model).color }"
-              aria-hidden="true"
-            ></span>
+          <button v-for="model in displayModels" :key="model.id" class="model-row model-choice" type="button" :title="`复制模型 ID：${model.id}`" @click="copyModelName(model)">
+            <span class="model-brand-icon" :style="{ '--model-icon': `url(${modelIcon(model).src})`, '--model-icon-color': modelIcon(model).color }" aria-hidden="true"></span>
             <div>
               <div class="model-name">{{ model.name || model.id }}</div>
             </div>
@@ -301,107 +293,112 @@ onUnmounted(() => {
           </button>
         </div>
         <div v-if="displayModels.length === 0" class="empty-state compact">暂无模型，启动代理后点击探测模型。</div>
-        <button class="link-row" type="button" @click="emit('open-models')">查看全部模型 <i class="bi bi-chevron-right"></i></button>
       </div>
 
       <div class="glass-panel area-config">
-        <div class="panel-header">
+        <div class="panel-header compact-header">
           <div>
             <h2>Configuration</h2>
+            <p>首页只展示关键配置，完整项在设置页查看。</p>
           </div>
           <span class="status-chip ok">Valid</span>
         </div>
-        <div class="setting-row">
-          <div>
-            <div class="cell-main">Host</div>
-            <div class="cell-sub">{{ config.Host || '127.0.0.1' }}</div>
+        <div class="config-summary">
+          <div class="config-summary-item">
+            <label>监听地址</label>
+            <strong>{{ config.Host || '127.0.0.1' }}:{{ config.Port || 8095 }}</strong>
           </div>
-          <span class="status-chip ok"><i class="bi bi-check"></i></span>
+          <div class="config-summary-item">
+            <label>传输方式</label>
+            <strong>{{ transportLabel }}</strong>
+          </div>
+          <div class="config-summary-item">
+            <label>会话策略</label>
+            <strong>{{ config.SessionMode || 'Reuse' }}</strong>
+          </div>
+          <div class="config-summary-item">
+            <label>超时</label>
+            <strong>{{ config.Timeout || 120 }} 秒</strong>
+          </div>
+          <div class="config-summary-item span-2">
+            <label>工作目录</label>
+            <strong :title="config.Cwd || '未配置'">{{ config.Cwd || '未配置' }}</strong>
+          </div>
+          <div v-if="config.CurrentFilePath" class="config-summary-item span-2">
+            <label>当前文件</label>
+            <strong :title="config.CurrentFilePath">{{ config.CurrentFilePath }}</strong>
+          </div>
         </div>
-        <div class="setting-row">
+      </div>
+
+      <div class="glass-panel area-usage">
+        <div class="panel-header">
           <div>
-            <div class="cell-main">Port</div>
-            <div class="cell-sub">{{ config.Port || 8095 }}</div>
+            <h2>Token 统计</h2>
+            <p>按代理返回的 usage 累计，流式缺失字段时只统计可获得部分。</p>
           </div>
-          <span class="status-chip ok"><i class="bi bi-check"></i></span>
+          <span class="status-chip ok">Persisted</span>
         </div>
-        <div class="setting-row">
+        <div class="usage-grid">
           <div>
-            <div class="cell-main">Transport</div>
-            <div class="cell-sub">{{ transportLabel }}</div>
+            <label>总 Token</label>
+            <strong>{{ formatNumber(tokenStats.totalTokens) }}</strong>
           </div>
-          <span class="status-chip ok"><i class="bi bi-check"></i></span>
+          <div>
+            <label>输入</label>
+            <strong>{{ formatNumber(tokenStats.inputTokens) }}</strong>
+          </div>
+          <div>
+            <label>输出</label>
+            <strong>{{ formatNumber(tokenStats.outputTokens) }}</strong>
+          </div>
+          <div>
+            <label>成功率</label>
+            <strong>{{ successRate }}</strong>
+          </div>
         </div>
-        <div class="setting-row">
-          <div>
-            <div class="cell-main">Session</div>
-            <div class="cell-sub">{{ config.SessionMode || 'Reuse' }}</div>
-          </div>
-          <span class="status-chip ok"><i class="bi bi-check"></i></span>
-        </div>
-        <div class="setting-row">
-          <div>
-            <div class="cell-main">Timeout (s)</div>
-            <div class="cell-sub">{{ config.Timeout || 120 }} 秒</div>
-          </div>
-          <span class="status-chip ok"><i class="bi bi-check"></i></span>
-        </div>
-        <div class="setting-row">
-          <div>
-            <div class="cell-main">CWD</div>
-            <div class="cell-sub">{{ config.Cwd || '未配置' }}</div>
-          </div>
-          <span class="status-chip ok"><i class="bi bi-check"></i></span>
-        </div>
-        <div class="setting-row">
-          <div>
-            <div class="cell-main">Current File</div>
-            <div class="cell-sub">{{ config.CurrentFilePath || '未配置' }}</div>
-          </div>
-          <span class="status-chip ok"><i class="bi bi-check"></i></span>
+        <div class="usage-foot">
+          <span>累计请求 {{ formatNumber(tokenStats.totalRequests) }} 次</span>
+          <span v-if="tokenStats.lastModel">最近模型 {{ tokenStats.lastModel }}</span>
         </div>
       </div>
 
       <div class="table-panel area-requests">
-      <div class="table-toolbar">
-        <div>
-          <div class="panel-header" style="margin: 0">
+        <div class="table-toolbar">
+          <div class="panel-header toolbar-header">
             <h2>Recent Requests</h2>
           </div>
+          <button type="button" class="btn-sm-outline" @click="emit('open-requests')">
+            查看全部请求 <i class="bi bi-chevron-right"></i>
+          </button>
         </div>
-        <button class="secondary-button" type="button" @click="emit('open-requests')">查看全部</button>
-      </div>
-      <div v-if="displayRequests.length > 0" class="table-scroll hidden-scrollbar">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Method</th>
-              <th>Path</th>
-              <th>Model</th>
-              <th>Status</th>
-              <th>Duration</th>
-              <th>Size</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(request, index) in displayRequests" :key="index">
-              <td>{{ request.time }}</td>
-              <td>{{ request.method }}</td>
-              <td>{{ request.path }}</td>
-              <td>{{ request.model || '-' }}</td>
-              <td><span class="status-chip" :class="statusClass(request.statusCode)">{{ request.statusCode }}</span></td>
-              <td>{{ request.duration }}</td>
-              <td>{{ request.size || '-' }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <div v-else class="empty-state compact">暂无请求记录。连接客户端后会显示真实调用。</div>
-      <div class="table-footer">
-        <span>Showing {{ displayRequests.length }} of {{ requests.length }}</span>
-        <button type="button" @click="emit('open-requests')">查看全部请求 <i class="bi bi-chevron-right"></i></button>
-      </div>
+        <div v-if="displayRequests.length > 0" class="table-scroll hidden-scrollbar">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Method</th>
+                <th>Path</th>
+                <th>Model</th>
+                <th>Status</th>
+                <th>Duration</th>
+                <th>Size</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(request, index) in displayRequests" :key="index">
+                <td>{{ request.time }}</td>
+                <td>{{ request.method }}</td>
+                <td>{{ request.path }}</td>
+                <td>{{ request.model || '-' }}</td>
+                <td><span class="status-chip" :class="statusClass(request.statusCode)">{{ request.statusCode }}</span></td>
+                <td>{{ request.duration }}</td>
+                <td>{{ request.size || '-' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-else class="empty-state compact">暂无请求记录。连接客户端后会显示真实调用。</div>
       </div>
     </section>
   </div>

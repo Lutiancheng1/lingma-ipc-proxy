@@ -8,6 +8,8 @@ const config = ref({})
 const detection = ref(null)
 const saving = ref(false)
 const openSelect = ref('')
+const fallbackModelsText = ref('')
+const isIPCBackend = computed(() => (config.value.Backend || 'ipc') === 'ipc')
 
 const selectOptions = {
   Backend: [
@@ -54,6 +56,9 @@ function chooseOption(field, value) {
 onMounted(async () => {
   try {
     config.value = await GetConfig()
+    fallbackModelsText.value = Array.isArray(config.value.RemoteFallbackModels)
+      ? config.value.RemoteFallbackModels.join('\n')
+      : ''
     await refreshDetection()
   } catch (e) {
     emit('log', 'error', '配置加载失败：' + (e.message || String(e)))
@@ -71,6 +76,10 @@ async function refreshDetection() {
 async function save() {
   saving.value = true
   try {
+    config.value.RemoteFallbackModels = fallbackModelsText.value
+      .split(/\n|,/)
+      .map((item) => item.trim())
+      .filter(Boolean)
     await UpdateConfig(config.value)
     await refreshDetection()
     emit('log', 'info', '配置已保存，代理已按需重启')
@@ -95,7 +104,7 @@ async function save() {
       </button>
     </div>
 
-    <section class="grid-2">
+    <section class="grid-2 settings-grid">
       <div class="glass-panel">
         <div class="panel-header">
           <div>
@@ -155,6 +164,23 @@ async function save() {
           <div class="field">
             <label>超时秒数</label>
             <input v-model.number="config.Timeout" type="number" min="1" />
+          </div>
+          <div class="field span-2 switch-field">
+            <div>
+              <label>远端超时兜底</label>
+              <p>远端 API 超时、限流或 5xx 且尚未流式输出时，自动切换到下一个可用模型。</p>
+            </div>
+            <label class="switch">
+              <input v-model="config.RemoteFallbackEnabled" type="checkbox" />
+              <span></span>
+            </label>
+          </div>
+          <div class="field span-2">
+            <label>兜底模型顺序</label>
+            <textarea
+              v-model="fallbackModelsText"
+              placeholder="kmodel&#10;mmodel&#10;dashscope_qwen3_coder&#10;dashscope_qmodel"
+            ></textarea>
           </div>
           <div class="field span-2">
             <label>WebSocket 地址</label>
@@ -231,10 +257,16 @@ async function save() {
         <div class="panel-header">
           <div>
             <h2>会话与环境</h2>
-            <p>影响 Lingma 会话上下文和工具执行环境。</p>
+            <p>仅在 IPC 插件模式下生效，影响 Lingma 会话上下文和工具执行环境。</p>
           </div>
+          <span class="status-chip" :class="isIPCBackend ? 'ok' : 'warn'">{{ isIPCBackend ? '仅 IPC 生效' : '远端模式忽略' }}</span>
         </div>
-        <div class="form-grid">
+        <div v-if="!isIPCBackend" class="hint-box compact-hint">
+          <strong>当前为远端 API 模式</strong>
+          <span>右侧这组参数不会参与远端请求，只在切换到 IPC 插件模式后生效。</span>
+        </div>
+        <fieldset class="settings-fieldset" :disabled="!isIPCBackend">
+        <div class="form-grid compact-form-grid">
           <div class="field">
             <label>模式</label>
             <div class="custom-select" :class="{ open: openSelect === 'Mode' }">
@@ -301,9 +333,10 @@ async function save() {
           </div>
           <div class="field span-2">
             <label>工作目录</label>
-            <textarea v-model="config.Cwd" placeholder="Lingma 创建 session 时使用的 cwd"></textarea>
+            <input v-model="config.Cwd" type="text" placeholder="Lingma 创建 session 时使用的 cwd" />
           </div>
         </div>
+        </fieldset>
       </div>
     </section>
   </div>

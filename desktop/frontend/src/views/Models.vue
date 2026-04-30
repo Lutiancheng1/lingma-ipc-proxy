@@ -17,20 +17,81 @@ const filtered = computed(() => {
   return models.value.filter((model) => `${model.id} ${model.name}`.toLowerCase().includes(q))
 })
 
-function modelTag(model) {
+function modelSpec(model) {
   const text = `${model.id} ${model.name}`.toLowerCase()
-  if (text.includes('coder')) return '工具优先'
-  if (text.includes('thinking')) return '推理'
-  if (text.includes('kimi')) return '长文本'
-  if (text.includes('minimax')) return '通用'
-  return 'Lingma'
+  if (text.includes('kmodel') || text.includes('kimi')) {
+    return {
+      context: '256K',
+      capability: '文本/图像/视频/工具',
+      source: 'Kimi 官方',
+    }
+  }
+  if (text.includes('mmodel') || text.includes('minimax')) {
+    return {
+      context: '200K',
+      capability: 'Agent / Tool Use',
+      source: 'MiniMax 官方',
+    }
+  }
+  if (text.includes('coder')) {
+    return {
+      context: '1M',
+      capability: '思考 / Function Calling / 结构化输出',
+      source: '阿里云百炼 Qwen3-Coder',
+    }
+  }
+  if (text.includes('thinking')) {
+    return {
+      context: '256K',
+      capability: '思考 / Function Calling / 推理',
+      source: '阿里云百炼 Qwen3',
+    }
+  }
+  if (text.includes('qwen_max') || text.includes('qwen3-max')) {
+    return {
+      context: '256K',
+      capability: '思考 / Function Calling / 内置工具',
+      source: '阿里云百炼 Qwen3-Max',
+    }
+  }
+  if (text.includes('qmodel') || text.includes('qwen3.6')) {
+    return {
+      context: '1M',
+      capability: 'Function Calling / 内置工具 / 结构化输出',
+      source: '阿里云百炼 Qwen3.6-Plus',
+    }
+  }
+  if (text.includes('auto')) {
+    return {
+      context: '自动',
+      capability: 'Lingma 自动路由',
+      source: '账号返回',
+    }
+  }
+  return {
+    context: '未公开',
+    capability: '通用',
+    source: '账号返回',
+  }
+}
+
+async function loadCachedModels() {
+  loading.value = true
+  try {
+    status.value = await GetStatus()
+    models.value = await GetModels()
+  } catch (e) {
+    emit('log', 'error', '模型缓存读取失败：' + (e.message || String(e)))
+  } finally {
+    loading.value = false
+  }
 }
 
 async function refresh() {
   loading.value = true
   try {
     status.value = await GetStatus()
-    models.value = status.value.running ? await RefreshModels() : await GetModels()
+    models.value = await RefreshModels()
     emit('log', 'info', `模型列表刷新完成：${models.value.length} 个`)
   } catch (e) {
     emit('log', 'error', '模型列表刷新失败：' + (e.message || String(e)) + '。自动探测失败时请到设置页手动填写 WebSocket：ws://127.0.0.1:36510/，或 Windows Named Pipe：\\\\.\\pipe\\lingma-xxxx。')
@@ -54,7 +115,7 @@ async function copyModelName(model) {
   }
 }
 
-onMounted(refresh)
+onMounted(loadCachedModels)
 </script>
 
 <template>
@@ -111,7 +172,11 @@ onMounted(refresh)
             <div class="model-name">{{ model.name || model.id }}</div>
             <div class="model-meta">{{ model.id }}</div>
           </div>
-          <span class="status-chip" :class="modelTag(model) === '工具优先' ? 'ok' : 'warn'">{{ modelTag(model) }}</span>
+          <div class="model-specs">
+            <span class="spec-chip strong">{{ modelSpec(model).context }}</span>
+            <span class="spec-chip">{{ modelSpec(model).capability }}</span>
+            <span class="spec-chip muted-chip">{{ modelSpec(model).source }}</span>
+          </div>
         </button>
       </div>
       <div v-else class="empty-state">启动代理并刷新后会显示模型。</div>

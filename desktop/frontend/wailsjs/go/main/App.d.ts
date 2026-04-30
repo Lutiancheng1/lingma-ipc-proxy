@@ -11,11 +11,15 @@ export function GetConfig():Promise<service.Config>;
 
 export function GetDetectionInfo():Promise<main.DetectionInfo>;
 
+export function GetLogs():Promise<Array<main.AppLog>>;
+
 export function GetModels():Promise<Array<main.ModelInfo>>;
 
 export function GetRequests():Promise<Array<main.RequestRecord>>;
 
 export function GetStatus():Promise<main.ProxyStatus>;
+
+export function GetTokenStats():Promise<main.TokenStats>;
 
 export function HideWindow():Promise<void>;
 

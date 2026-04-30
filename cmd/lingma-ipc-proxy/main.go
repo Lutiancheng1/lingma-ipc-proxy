@@ -22,22 +22,24 @@ import (
 )
 
 type fileConfig struct {
-	Host            string `json:"host"`
-	Port            int    `json:"port"`
-	Backend         string `json:"backend"`
-	Transport       string `json:"transport"`
-	Pipe            string `json:"pipe"`
-	WebSocketURL    string `json:"websocket_url"`
-	RemoteBaseURL   string `json:"remote_base_url"`
-	RemoteAuthFile  string `json:"remote_auth_file"`
-	RemoteVersion   string `json:"remote_version"`
-	Cwd             string `json:"cwd"`
-	CurrentFilePath string `json:"current_file_path"`
-	Mode            string `json:"mode"`
-	Model           string `json:"model"`
-	ShellType       string `json:"shell_type"`
-	SessionMode     string `json:"session_mode"`
-	TimeoutSeconds  int    `json:"timeout"`
+	Host                  string   `json:"host"`
+	Port                  int      `json:"port"`
+	Backend               string   `json:"backend"`
+	Transport             string   `json:"transport"`
+	Pipe                  string   `json:"pipe"`
+	WebSocketURL          string   `json:"websocket_url"`
+	RemoteBaseURL         string   `json:"remote_base_url"`
+	RemoteAuthFile        string   `json:"remote_auth_file"`
+	RemoteVersion         string   `json:"remote_version"`
+	Cwd                   string   `json:"cwd"`
+	CurrentFilePath       string   `json:"current_file_path"`
+	Mode                  string   `json:"mode"`
+	Model                 string   `json:"model"`
+	ShellType             string   `json:"shell_type"`
+	SessionMode           string   `json:"session_mode"`
+	TimeoutSeconds        int      `json:"timeout"`
+	RemoteFallbackEnabled *bool    `json:"remote_fallback_enabled"`
+	RemoteFallbackModels  []string `json:"remote_fallback_models"`
 }
 
 func main() {
@@ -89,16 +91,18 @@ func main() {
 
 func loadConfig() (service.Config, string) {
 	cfg := service.Config{
-		Host:        "127.0.0.1",
-		Port:        8095,
-		Backend:     service.BackendRemote,
-		Transport:   lingmaipc.TransportAuto,
-		Cwd:         currentDir(),
-		Mode:        "agent",
-		Model:       "kmodel",
-		ShellType:   defaultShellType(),
-		SessionMode: service.SessionModeAuto,
-		Timeout:     120 * time.Second,
+		Host:                  "127.0.0.1",
+		Port:                  8095,
+		Backend:               service.BackendRemote,
+		Transport:             lingmaipc.TransportAuto,
+		Cwd:                   currentDir(),
+		Mode:                  "agent",
+		Model:                 "kmodel",
+		ShellType:             defaultShellType(),
+		SessionMode:           service.SessionModeAuto,
+		Timeout:               300 * time.Second,
+		RemoteFallbackEnabled: true,
+		RemoteFallbackModels:  service.DefaultRemoteFallbackModels(),
 	}
 
 	configPath, configLoaded := resolveConfigPath()
@@ -127,6 +131,8 @@ func loadConfig() (service.Config, string) {
 	model := flag.String("model", cfg.Model, "Default Lingma model when API request omits model")
 	shellType := flag.String("shell-type", cfg.ShellType, "Shell type sent through ACP meta")
 	timeoutSeconds := flag.Int("timeout", int(cfg.Timeout/time.Second), "Per-request timeout in seconds")
+	remoteFallbackEnabled := flag.Bool("remote-fallback", cfg.RemoteFallbackEnabled, "Enable remote timeout/5xx fallback to the next available model")
+	remoteFallbackModels := flag.String("remote-fallback-models", strings.Join(cfg.RemoteFallbackModels, ","), "Comma-separated remote fallback model IDs")
 	sessionMode := flag.String("session-mode", string(cfg.SessionMode), "Session mode: auto, fresh, reuse")
 	config := flag.String("config", valueOr(configPath, filepath.Join(currentDir(), "lingma-ipc-proxy.json")), "Path to JSON config file")
 	flag.Parse()
@@ -151,6 +157,8 @@ func loadConfig() (service.Config, string) {
 	cfg.ShellType = strings.TrimSpace(*shellType)
 	cfg.SessionMode = parsedSessionMode
 	cfg.Timeout = time.Duration(*timeoutSeconds) * time.Second
+	cfg.RemoteFallbackEnabled = *remoteFallbackEnabled
+	cfg.RemoteFallbackModels = splitCSV(*remoteFallbackModels)
 
 	if configLoaded {
 		configPath = finalConfigPath
@@ -236,6 +244,12 @@ func overlayFileConfig(dst *service.Config, src fileConfig) {
 	if src.TimeoutSeconds > 0 {
 		dst.Timeout = time.Duration(src.TimeoutSeconds) * time.Second
 	}
+	if src.RemoteFallbackEnabled != nil {
+		dst.RemoteFallbackEnabled = *src.RemoteFallbackEnabled
+	}
+	if len(src.RemoteFallbackModels) > 0 {
+		dst.RemoteFallbackModels = cleanStringSlice(src.RemoteFallbackModels)
+	}
 }
 
 func overlayEnvConfig(dst *service.Config) {
@@ -286,6 +300,12 @@ func overlayEnvConfig(dst *service.Config) {
 	}
 	if value := envInt("LINGMA_PROXY_TIMEOUT_SECONDS", 0); value > 0 {
 		dst.Timeout = time.Duration(value) * time.Second
+	}
+	if value, ok := envBool("LINGMA_REMOTE_FALLBACK_ENABLED"); ok {
+		dst.RemoteFallbackEnabled = value
+	}
+	if value := strings.TrimSpace(os.Getenv("LINGMA_REMOTE_FALLBACK_MODELS")); value != "" {
+		dst.RemoteFallbackModels = splitCSV(value)
 	}
 }
 
@@ -347,6 +367,36 @@ func envInt(key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+func envBool(key string) (bool, bool) {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch value {
+	case "1", "true", "yes", "on":
+		return true, true
+	case "0", "false", "no", "off":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func splitCSV(value string) []string {
+	return cleanStringSlice(strings.Split(value, ","))
+}
+
+func cleanStringSlice(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		item := strings.TrimSpace(value)
+		if item == "" || seen[item] {
+			continue
+		}
+		seen[item] = true
+		out = append(out, item)
+	}
+	return out
 }
 
 func currentDir() string {
